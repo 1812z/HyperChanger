@@ -26,6 +26,10 @@ HyperChanger is an LSPosed module for selected Xiaomi HyperOS 4 Beta builds. It 
 
 The project is in beta. HyperOS framework classes and resources can differ by device, region, and system build. A setting that works on one build may be unavailable or behave differently on another.
 
+## Disclaimer
+
+HyperChanger is an experimental, community-developed LSPosed module and is not affiliated with or endorsed by Xiaomi. It requires root access and a compatible LSPosed environment, and it hooks vendor implementation details that may change between HyperOS builds. Hooks can be ineffective, cause System UI instability, or require recovery-based disabling. Use the module at your own risk, keep a recovery path available, and back up important data before testing. The project provides no guarantee of compatibility, availability, or fitness for a particular device.
+
 ## Features
 
 ### Notification shade and Control Center
