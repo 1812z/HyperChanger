@@ -48,3 +48,21 @@ hyperos4-glass-blur-main/
 /*.apk
 /*.aar
 /*.resources.txt
+
+# Local reverse-engineering projects, dumps, and generated output
+/apk-output/
+/apk-output-final/
+/HyperBackground/
+/HyperCeiler-main/
+/REAREye-dev/
+/XiaomiHelper-master/
+/PowerShell 7.6.4/
+/null/
+/work/
+/设置美化设计-教程等/
+/机型图片-新增/
+/.anr-latest.txt
+/*.dex
+/*.db
+/*.tmp
+/.codex-window.xml

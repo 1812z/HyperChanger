@@ -50,6 +50,7 @@ data class HookSettings(
     val controlCenterElementsMaterial: MaterialOverride = MaterialOverride(),
     val notificationCenterBackgroundMaterial: MaterialOverride = MaterialOverride(),
     val controlCenterBackgroundMaterial: MaterialOverride = MaterialOverride(),
+    val shadeSettingsUnified: Boolean = false,
     val notificationOpacity: Int = 100,
     val controlCenterOpacity: Int = 100,
     val blurRadius: Float = 0f,
@@ -82,29 +83,50 @@ data class HookSettings(
     val expandedIslandGlassLargeBlurRadius: Int = 110,
     val expandedIslandSelfBlurRadius: Int = 0,
     val expandedIslandShowHighlight: Boolean = false,
+    val superXiaoAiGlobalSearchAppearance: Boolean = false,
     val clockEnabled: Boolean = false,
     val clockSize: Float = 14.8f,
     val paddingEndEnabled: Boolean = false,
-    val paddingEnd: Float = 6f,
+    val paddingEnd: Float = 0f,
+    val paddingEndLegacyAbsolute: Float? = null,
     val paddingStartEnabled: Boolean = false,
     val paddingStart: Float = 12.5f,
     val heightEnabled: Boolean = false,
     val statusBarHeight: Int = 40,
     val paddingTopEnabled: Boolean = false,
-    val paddingTop: Float = 15f,
+    val paddingTop: Float = 0f,
+    val paddingTopLegacyAbsolute: Float? = null,
     val topButtonsRadiusEnabled: Boolean = false,
     val topButtonsRadius: Float = 24f,
     val mediaCardRadiusEnabled: Boolean = false,
     val mediaCardRadius: Float = 24f,
     val sliderRadiusEnabled: Boolean = false,
     val sliderRadius: Float = 24f,
+    val controlBottomButtonsRadiusEnabled: Boolean = false,
+    val controlBottomButtonsRadius: Float = 24f,
+    val volumePanelBlurRadius: Int = 24,
+    val volumePanelGlassStrength: Int = 50,
+    val volumePanelCornerRadius: Float = 24f,
+    val volumePanelBackgroundOpacity: Int = 100,
+    val volumePanelMaterialEnabled: Boolean = true,
     val deviceCenterRadiusEnabled: Boolean = false,
     val deviceCenterRadius: Float = 24f,
     val removeDepthImageLimit: Boolean = false,
-    val notificationFodMode: Int = 0,
+    val rasterWallpaperEnabled: Boolean = false,
+    val rasterWallpaperUris: String = "[]",
+    val rasterWallpaperSensitivityPreset: Int = 1,
+    val rasterWallpaperCustomSensitivity: Float = 1f,
+    val notificationFodPositionLimitRemoved: Boolean = false,
+    val fingerprintHideMode: Int = 0,
     val hideLockscreenChargingText: Boolean = false,
     val lockscreenShortcutBackgroundMode: Int = 0,
     val lockscreenShortcutGlassRadius: Float = 48f,
+    val lockscreenShortcutBackgroundRadiusEnabled: Boolean = false,
+    val lockscreenShortcutBackgroundRadius: Float = 24f,
+    val lockscreenShortcutSpacingEnabled: Boolean = false,
+    val lockscreenShortcutSpacing: Float = 0f,
+    val lockscreenShortcutIconSizeEnabled: Boolean = false,
+    val lockscreenShortcutIconSize: Float = 32f,
     val shortcutIconColorMode: Int = 0,
     val shortcutPureColor: Int = 0x73FFFFFF,
     val shortcutAdvancedMaterialColor: Int = 0xFFFFFFFF.toInt(),
@@ -116,6 +138,29 @@ data class HookSettings(
     val shortcutSoftGlassBackdropBlurRadius: Int = 80,
     val shortcutSoftGlassBlurRadius: Int = 36,
     val shortcutSoftGlassLuminance: Float = 0.14f,
+    val lockscreenMiniPlayerEnabled: Boolean = false,
+    val lockscreenMiniPlayerHideMediaNotification: Boolean = false,
+    val lockscreenMiniPlayerBackgroundMode: Int = 0,
+    val lockscreenMiniPlayerWidth: Float = 240f,
+    // This is the same unit as the lockscreen shortcut circle radius. The rendered card is
+    // twice this value, so a shortcut radius of 28dp is matched by entering 28dp here.
+    val lockscreenMiniPlayerHeight: Float = 36f,
+    val miniPlayerPureColor: Int = 0x73000000,
+    val miniPlayerAdvancedMaterialColor: Int = 0xFFFFFFFF.toInt(),
+    val miniPlayerAdvancedMaterialOpacity: Int = 14,
+    val miniPlayerAdvancedMaterialBlurRadius: Int = 80,
+    val miniPlayerAdvancedMaterialHighlight: Boolean = false,
+    val miniPlayerSoftGlassColor: Int = 0xFFFFFFFF.toInt(),
+    val miniPlayerSoftGlassOpacity: Int = 10,
+    val miniPlayerSoftGlassBackdropBlurRadius: Int = 80,
+    val miniPlayerSoftGlassBlurRadius: Int = 36,
+    val miniPlayerSoftGlassLuminance: Float = 0.14f,
+    val keepSoftGlassAfterGlobalTheme: Boolean = false,
+    val removeClockMaterialLimit: Boolean = false,
+    val hideStatusBarNetworkType: Boolean = false,
+    val hideStatusBarWifiStandard: Boolean = false,
+    val hideStatusBarClockText: Boolean = false,
+    val hideStatusBarNetworkActivity: Boolean = false,
     val themeMode: String = "system",
     val navigationStyle: String = "hyper_os",
     val predictiveBackEnabled: Boolean = true,
@@ -178,6 +223,7 @@ private const val KEY_NOTIFICATION_ELEMENTS_MATERIAL = "shade_notification_eleme
 private const val KEY_CONTROL_CENTER_ELEMENTS_MATERIAL = "shade_control_center_elements_material_v2"
 private const val KEY_NOTIFICATION_CENTER_BACKGROUND_MATERIAL = "shade_notification_center_background_material_v2"
 private const val KEY_CONTROL_CENTER_BACKGROUND_MATERIAL = "shade_control_center_background_material_v2"
+private const val KEY_SHADE_SETTINGS_UNIFIED = "shade_settings_unified"
 private const val LEGACY_EXPANDED_ISLAND_BACKGROUND_COLOR = "expanded_island_background_color"
 private const val LEGACY_ISLAND_GLOW_ENABLED = "island_glow_enabled"
 private const val LEGACY_ISLAND_PROGRESS_STYLE = "island_progress_style"
@@ -216,31 +262,58 @@ private const val KEY_EXPANDED_ISLAND_GLASS_BLUR_RADIUS = "expanded_island_glass
 private const val KEY_EXPANDED_ISLAND_GLASS_LARGE_BLUR_RADIUS = "expanded_island_glass_large_blur_radius"
 private const val KEY_EXPANDED_ISLAND_SELF_BLUR_RADIUS = "expanded_island_self_blur_radius"
 private const val KEY_EXPANDED_ISLAND_SHOW_HIGHLIGHT = "expanded_island_show_highlight"
+private const val KEY_SUPER_XIAOAI_GLOBAL_SEARCH_APPEARANCE =
+    "super_xiaoai_global_search_appearance"
 private const val KEY_CLOCK_ENABLED = "clock_enabled"
 private const val KEY_CLOCK_SIZE = "clock_size"
 private const val KEY_PADDING_END_ENABLED = "padding_end_enabled"
 private const val KEY_PADDING_END = "padding_end"
+private const val KEY_PADDING_END_LEGACY_ABSOLUTE = "padding_end_legacy_absolute"
 private const val KEY_PADDING_START_ENABLED = "padding_start_enabled"
 private const val KEY_PADDING_START = "padding_start"
 private const val KEY_HEIGHT_ENABLED = "height_enabled"
 private const val KEY_STATUS_BAR_HEIGHT = "status_bar_height"
 private const val KEY_PADDING_TOP_ENABLED = "padding_top_enabled"
 private const val KEY_PADDING_TOP = "padding_top"
+private const val KEY_PADDING_TOP_LEGACY_ABSOLUTE = "padding_top_legacy_absolute"
+private const val KEY_STATUS_DIMENSION_DELTAS_V1 = "status_dimension_deltas_v1"
 private const val KEY_TOP_BUTTONS_RADIUS_ENABLED = "top_buttons_radius_enabled"
 private const val KEY_TOP_BUTTONS_RADIUS = "top_buttons_radius"
 private const val KEY_MEDIA_CARD_RADIUS_ENABLED = "media_card_radius_enabled"
 private const val KEY_MEDIA_CARD_RADIUS = "media_card_radius"
 private const val KEY_SLIDER_RADIUS_ENABLED = "slider_radius_enabled"
 private const val KEY_SLIDER_RADIUS = "slider_radius"
+private const val KEY_CONTROL_BOTTOM_BUTTONS_RADIUS_ENABLED = "control_bottom_buttons_radius_enabled"
+private const val KEY_CONTROL_BOTTOM_BUTTONS_RADIUS = "control_bottom_buttons_radius"
+private const val KEY_VOLUME_PANEL_BLUR_RADIUS = "volume_panel_blur_radius"
+private const val KEY_VOLUME_PANEL_GLASS_STRENGTH = "volume_panel_glass_strength"
+private const val KEY_VOLUME_PANEL_CORNER_RADIUS = "volume_panel_corner_radius"
+private const val KEY_VOLUME_PANEL_BACKGROUND_OPACITY = "volume_panel_background_opacity"
+private const val KEY_VOLUME_PANEL_BACKGROUND_TRANSPARENCY_LEGACY = "volume_panel_background_transparency"
+private const val KEY_VOLUME_PANEL_MATERIAL_ENABLED = "volume_panel_material_enabled"
 private const val KEY_DEVICE_CENTER_RADIUS_ENABLED = "device_center_radius_enabled"
 private const val KEY_DEVICE_CENTER_RADIUS = "device_center_radius"
 private const val KEY_REMOVE_DEPTH_IMAGE_LIMIT = "remove_depth_image_limit"
+private const val KEY_RASTER_WALLPAPER_ENABLED = "raster_wallpaper_enabled"
+private const val KEY_RASTER_WALLPAPER_URIS = "raster_wallpaper_uris"
+private const val KEY_RASTER_WALLPAPER_SENSITIVITY_PRESET = "raster_wallpaper_sensitivity_preset"
+private const val KEY_RASTER_WALLPAPER_CUSTOM_SENSITIVITY = "raster_wallpaper_custom_sensitivity"
 private const val KEY_NOTIFICATION_FOD_MODE = "notification_fod_mode"
+private const val KEY_NOTIFICATION_FOD_POSITION_LIMIT_REMOVED = "notification_fod_position_limit_removed"
+private const val KEY_FINGERPRINT_HIDE_MODE = "fingerprint_hide_mode"
 private const val KEY_NOTIFICATIONS_IGNORE_FOD = "notifications_ignore_fod"
 private const val KEY_HIDE_LOCKSCREEN_CHARGING_TEXT = "hide_lockscreen_charging_text"
 private const val KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_MODE = "lockscreen_shortcut_background_mode"
 private const val KEY_LOCKSCREEN_SHORTCUT_GLASS_ENABLED = "lockscreen_shortcut_glass_enabled"
 private const val KEY_LOCKSCREEN_SHORTCUT_GLASS_RADIUS = "lockscreen_shortcut_glass_radius"
+private const val KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_RADIUS_ENABLED =
+    "lockscreen_shortcut_background_radius_enabled"
+private const val KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_RADIUS =
+    "lockscreen_shortcut_background_radius"
+private const val KEY_LOCKSCREEN_SHORTCUT_SPACING_ENABLED = "lockscreen_shortcut_spacing_enabled"
+private const val KEY_LOCKSCREEN_SHORTCUT_SPACING = "lockscreen_shortcut_spacing"
+private const val KEY_LOCKSCREEN_SHORTCUT_ICON_SIZE_ENABLED = "lockscreen_shortcut_icon_size_enabled"
+private const val KEY_LOCKSCREEN_SHORTCUT_ICON_SIZE = "lockscreen_shortcut_icon_size"
 private const val KEY_SHORTCUT_ICON_COLOR_MODE = "shortcut_icon_color_mode"
 private const val KEY_SHORTCUT_PURE_COLOR = "shortcut_pure_color"
 private const val KEY_SHORTCUT_ADVANCED_MATERIAL_COLOR = "shortcut_advanced_material_color"
@@ -252,15 +325,65 @@ private const val KEY_SHORTCUT_SOFT_GLASS_OPACITY = "shortcut_soft_glass_opacity
 private const val KEY_SHORTCUT_SOFT_GLASS_BACKDROP_BLUR_RADIUS = "shortcut_soft_glass_backdrop_blur_radius"
 private const val KEY_SHORTCUT_SOFT_GLASS_BLUR_RADIUS = "shortcut_soft_glass_blur_radius"
 private const val KEY_SHORTCUT_SOFT_GLASS_LUMINANCE = "shortcut_soft_glass_luminance"
+private const val KEY_LOCKSCREEN_MINI_PLAYER_ENABLED = "lockscreen_mini_player_enabled"
+private const val KEY_LOCKSCREEN_MINI_PLAYER_HIDE_MEDIA_NOTIFICATION =
+    "lockscreen_mini_player_hide_media_notification"
+private const val KEY_LOCKSCREEN_MINI_PLAYER_BACKGROUND_MODE = "lockscreen_mini_player_background_mode"
+private const val KEY_LOCKSCREEN_MINI_PLAYER_WIDTH = "lockscreen_mini_player_width"
+private const val KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT = "lockscreen_mini_player_height"
+private const val KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT_RADIUS_MIGRATED =
+    "lockscreen_mini_player_height_radius_migrated"
+private const val KEY_MINI_PLAYER_PURE_COLOR = "mini_player_pure_color"
+private const val KEY_MINI_PLAYER_ADVANCED_MATERIAL_COLOR = "mini_player_advanced_material_color"
+private const val KEY_MINI_PLAYER_ADVANCED_MATERIAL_OPACITY = "mini_player_advanced_material_opacity"
+private const val KEY_MINI_PLAYER_ADVANCED_MATERIAL_BLUR_RADIUS =
+    "mini_player_advanced_material_blur_radius"
+private const val KEY_MINI_PLAYER_ADVANCED_MATERIAL_HIGHLIGHT =
+    "mini_player_advanced_material_highlight"
+private const val KEY_MINI_PLAYER_SOFT_GLASS_COLOR = "mini_player_soft_glass_color"
+private const val KEY_MINI_PLAYER_SOFT_GLASS_OPACITY = "mini_player_soft_glass_opacity"
+private const val KEY_MINI_PLAYER_SOFT_GLASS_BACKDROP_BLUR_RADIUS =
+    "mini_player_soft_glass_backdrop_blur_radius"
+private const val KEY_MINI_PLAYER_SOFT_GLASS_BLUR_RADIUS = "mini_player_soft_glass_blur_radius"
+private const val KEY_MINI_PLAYER_SOFT_GLASS_LUMINANCE = "mini_player_soft_glass_luminance"
+private const val KEY_KEEP_SOFT_GLASS_AFTER_GLOBAL_THEME = "keep_soft_glass_after_global_theme"
+private const val KEY_REMOVE_CLOCK_MATERIAL_LIMIT = "remove_clock_material_limit"
+private const val KEY_HIDE_STATUS_BAR_NETWORK_TYPE = "hide_status_bar_network_type"
+private const val KEY_HIDE_STATUS_BAR_WIFI_STANDARD = "hide_status_bar_wifi_standard"
+private const val KEY_HIDE_STATUS_BAR_CLOCK_TEXT = "hide_status_bar_clock_text"
+private const val KEY_HIDE_STATUS_BAR_NETWORK_ACTIVITY = "hide_status_bar_network_activity"
 private const val KEY_THEME_MODE = "theme_mode"
 private const val KEY_NAVIGATION_STYLE = "navigation_style"
 private const val KEY_PREDICTIVE_BACK_ENABLED = "predictive_back_enabled"
 private const val KEY_PREDICTIVE_BACK_PROGRESS = "predictive_back_progress"
-private fun SharedPreferences.toSettings() = HookSettings(
+internal fun SharedPreferences.readMiniPlayerHeightRadius(): Float {
+    val raw = getFloat(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT, 36f)
+    if (contains(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT) &&
+        !getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT_RADIUS_MIGRATED, false)
+    ) {
+        // Values written by the previous version represented the final card height (48..120dp).
+        // Convert them once so an existing 59dp card remains 59dp after the setting changes to
+        // the shortcut-radius unit (29.5dp -> 59dp rendered height).
+        val converted = if (raw >= 48f) raw / 2f else raw
+        edit()
+            .putFloat(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT, converted)
+            .putBoolean(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT_RADIUS_MIGRATED, true)
+            .apply()
+        return converted.coerceIn(28f, 80f)
+    }
+    return raw.coerceIn(28f, 80f)
+}
+
+private fun SharedPreferences.toSettings(): HookSettings {
+    val statusDimensionsAreDeltas = getBoolean(KEY_STATUS_DIMENSION_DELTAS_V1, false)
+    val oldPaddingEnd = getFloat(KEY_PADDING_END, 6f).coerceIn(0f, 32f)
+    val oldPaddingTop = getFloat(KEY_PADDING_TOP, 15f).coerceIn(0f, 32f)
+    return HookSettings(
     notificationElementsMaterial = getMaterialOverride(KEY_NOTIFICATION_ELEMENTS_MATERIAL),
     controlCenterElementsMaterial = getMaterialOverride(KEY_CONTROL_CENTER_ELEMENTS_MATERIAL),
     notificationCenterBackgroundMaterial = getMaterialOverride(KEY_NOTIFICATION_CENTER_BACKGROUND_MATERIAL),
     controlCenterBackgroundMaterial = getMaterialOverride(KEY_CONTROL_CENTER_BACKGROUND_MATERIAL),
+    shadeSettingsUnified = getBoolean(KEY_SHADE_SETTINGS_UNIFIED, false),
     notificationOpacity = getInt(KEY_NOTIFICATION_OPACITY, 100).coerceIn(0, 100),
     controlCenterOpacity = getInt(KEY_CONTROL_CENTER_OPACITY, 100).coerceIn(0, 100),
     blurRadius = getFloat(KEY_BLUR_RADIUS, 0f).coerceIn(0f, 40f),
@@ -289,57 +412,151 @@ private fun SharedPreferences.toSettings() = HookSettings(
     islandEnabled = getBoolean(KEY_ISLAND_ENABLED, false),
     islandWidth = getInt(KEY_ISLAND_WIDTH, 108).coerceIn(108, 190),
     expandedIslandBackgroundEnabled = getBoolean(KEY_EXPANDED_ISLAND_BACKGROUND_ENABLED, false),
-    expandedIslandBackgroundOpacity = getInt(KEY_EXPANDED_ISLAND_BACKGROUND_OPACITY, 35).coerceIn(0, 35),
-    expandedIslandGlassBlurRadius = getInt(KEY_EXPANDED_ISLAND_GLASS_BLUR_RADIUS, 10).coerceIn(0, 10),
-    expandedIslandGlassLargeBlurRadius = getInt(KEY_EXPANDED_ISLAND_GLASS_LARGE_BLUR_RADIUS, 10).coerceIn(0, 10),
-    expandedIslandSelfBlurRadius = getInt(KEY_EXPANDED_ISLAND_SELF_BLUR_RADIUS, 0).coerceIn(0, 10),
+    expandedIslandBackgroundOpacity = getInt(KEY_EXPANDED_ISLAND_BACKGROUND_OPACITY, 35).coerceIn(0, 100),
+    expandedIslandGlassBlurRadius = getInt(KEY_EXPANDED_ISLAND_GLASS_BLUR_RADIUS, 10).coerceIn(0, 40),
+    expandedIslandGlassLargeBlurRadius = getInt(KEY_EXPANDED_ISLAND_GLASS_LARGE_BLUR_RADIUS, 10).coerceIn(0, 40),
+    expandedIslandSelfBlurRadius = getInt(KEY_EXPANDED_ISLAND_SELF_BLUR_RADIUS, 0).coerceIn(0, 40),
     expandedIslandShowHighlight = getBoolean(KEY_EXPANDED_ISLAND_SHOW_HIGHLIGHT, false),
+    superXiaoAiGlobalSearchAppearance = getBoolean(
+        KEY_SUPER_XIAOAI_GLOBAL_SEARCH_APPEARANCE,
+        false,
+    ),
     clockEnabled = getBoolean(KEY_CLOCK_ENABLED, false),
     clockSize = getFloat(KEY_CLOCK_SIZE, 14.8f).coerceIn(10f, 24f),
     paddingEndEnabled = getBoolean(KEY_PADDING_END_ENABLED, false),
-    paddingEnd = getFloat(KEY_PADDING_END, 6f).coerceIn(0f, 32f),
+    paddingEnd = if (statusDimensionsAreDeltas) getFloat(KEY_PADDING_END, 0f).coerceIn(-35f, 35f) else 0f,
+    paddingEndLegacyAbsolute = when {
+        statusDimensionsAreDeltas && contains(KEY_PADDING_END_LEGACY_ABSOLUTE) ->
+            getFloat(KEY_PADDING_END_LEGACY_ABSOLUTE, 0f).coerceIn(0f, 32f)
+        !statusDimensionsAreDeltas && getBoolean(KEY_PADDING_END_ENABLED, false) -> oldPaddingEnd
+        else -> null
+    },
     paddingStartEnabled = getBoolean(KEY_PADDING_START_ENABLED, false),
     paddingStart = getFloat(KEY_PADDING_START, 12.5f).coerceIn(0f, 32f),
     heightEnabled = getBoolean(KEY_HEIGHT_ENABLED, false),
     statusBarHeight = getInt(KEY_STATUS_BAR_HEIGHT, 40).coerceIn(24, 72),
     paddingTopEnabled = getBoolean(KEY_PADDING_TOP_ENABLED, false),
-    paddingTop = getFloat(KEY_PADDING_TOP, 15f).coerceIn(0f, 32f),
+    paddingTop = if (statusDimensionsAreDeltas) getFloat(KEY_PADDING_TOP, 0f).coerceIn(-35f, 35f) else 0f,
+    paddingTopLegacyAbsolute = when {
+        statusDimensionsAreDeltas && contains(KEY_PADDING_TOP_LEGACY_ABSOLUTE) ->
+            getFloat(KEY_PADDING_TOP_LEGACY_ABSOLUTE, 0f).coerceIn(0f, 32f)
+        !statusDimensionsAreDeltas && getBoolean(KEY_PADDING_TOP_ENABLED, false) -> oldPaddingTop
+        else -> null
+    },
     topButtonsRadiusEnabled = getBoolean(KEY_TOP_BUTTONS_RADIUS_ENABLED, false),
     topButtonsRadius = getFloat(KEY_TOP_BUTTONS_RADIUS, 24f).coerceIn(0f, 60f),
     mediaCardRadiusEnabled = getBoolean(KEY_MEDIA_CARD_RADIUS_ENABLED, false),
     mediaCardRadius = getFloat(KEY_MEDIA_CARD_RADIUS, 24f).coerceIn(0f, 60f),
     sliderRadiusEnabled = getBoolean(KEY_SLIDER_RADIUS_ENABLED, false),
     sliderRadius = getFloat(KEY_SLIDER_RADIUS, 24f).coerceIn(0f, 60f),
+    controlBottomButtonsRadiusEnabled = getBoolean(KEY_CONTROL_BOTTOM_BUTTONS_RADIUS_ENABLED, false),
+    controlBottomButtonsRadius = getFloat(KEY_CONTROL_BOTTOM_BUTTONS_RADIUS, 24f).coerceIn(0f, 60f),
+    volumePanelBlurRadius = getInt(KEY_VOLUME_PANEL_BLUR_RADIUS, 24).coerceIn(0, 120),
+    volumePanelGlassStrength = getInt(KEY_VOLUME_PANEL_GLASS_STRENGTH, 50).coerceIn(0, 100),
+    volumePanelCornerRadius = getFloat(KEY_VOLUME_PANEL_CORNER_RADIUS, 24f).coerceIn(0f, 60f),
+    volumePanelBackgroundOpacity = if (contains(KEY_VOLUME_PANEL_BACKGROUND_OPACITY)) {
+        getInt(KEY_VOLUME_PANEL_BACKGROUND_OPACITY, 100).coerceIn(0, 100)
+    } else {
+        // The pre-release control was labelled transparency. Preserve its value while
+        // converting it to the new, direct opacity semantics.
+        (100 - getInt(KEY_VOLUME_PANEL_BACKGROUND_TRANSPARENCY_LEGACY, 0)).coerceIn(0, 100)
+    },
+    volumePanelMaterialEnabled = getBoolean(KEY_VOLUME_PANEL_MATERIAL_ENABLED, true),
     deviceCenterRadiusEnabled = getBoolean(KEY_DEVICE_CENTER_RADIUS_ENABLED, false),
     deviceCenterRadius = getFloat(KEY_DEVICE_CENTER_RADIUS, 24f).coerceIn(0f, 60f),
     removeDepthImageLimit = getBoolean(KEY_REMOVE_DEPTH_IMAGE_LIMIT, false),
-    notificationFodMode = getInt(
-        KEY_NOTIFICATION_FOD_MODE,
-        if (getBoolean(KEY_NOTIFICATIONS_IGNORE_FOD, false)) 2 else 0,
-    ).coerceIn(0, 2),
-    hideLockscreenChargingText = getBoolean(KEY_HIDE_LOCKSCREEN_CHARGING_TEXT, false),
+    rasterWallpaperEnabled = getBoolean(KEY_RASTER_WALLPAPER_ENABLED, false),
+    rasterWallpaperUris = getString(KEY_RASTER_WALLPAPER_URIS, "[]").orEmpty(),
+    rasterWallpaperSensitivityPreset = getInt(KEY_RASTER_WALLPAPER_SENSITIVITY_PRESET, 1).coerceIn(0, 4),
+    rasterWallpaperCustomSensitivity = getFloat(KEY_RASTER_WALLPAPER_CUSTOM_SENSITIVITY, 1f).coerceIn(0.1f, 2f),
+    notificationFodPositionLimitRemoved = if (contains(KEY_NOTIFICATION_FOD_POSITION_LIMIT_REMOVED)) {
+        getBoolean(KEY_NOTIFICATION_FOD_POSITION_LIMIT_REMOVED, false)
+    } else {
+        getInt(KEY_NOTIFICATION_FOD_MODE, if (getBoolean(KEY_NOTIFICATIONS_IGNORE_FOD, false)) 2 else 0)
+            .coerceIn(0, 2) != 0
+    },
+    fingerprintHideMode = if (contains(KEY_FINGERPRINT_HIDE_MODE)) {
+        getInt(KEY_FINGERPRINT_HIDE_MODE, 0).coerceIn(0, 2)
+    } else {
+        // The legacy hide-icon choice was global; preserve it during upgrade.
+        if (getInt(KEY_NOTIFICATION_FOD_MODE, 0) == 1) 2 else 0
+    },
+    hideLockscreenChargingText = getBoolean(KEY_HIDE_LOCKSCREEN_CHARGING_TEXT, false) ||
+        getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, false),
     lockscreenShortcutBackgroundMode = getInt(
         KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_MODE,
         if (getBoolean(KEY_LOCKSCREEN_SHORTCUT_GLASS_ENABLED, false)) 3 else 0,
     ).coerceIn(0, 3),
     lockscreenShortcutGlassRadius = getFloat(KEY_LOCKSCREEN_SHORTCUT_GLASS_RADIUS, 48f)
         .coerceIn(28f, 80f),
+    lockscreenShortcutBackgroundRadiusEnabled = getBoolean(
+        KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_RADIUS_ENABLED,
+        false,
+    ),
+    lockscreenShortcutBackgroundRadius = getFloat(
+        KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_RADIUS,
+        24f,
+    ).coerceIn(0f, 60f),
+    lockscreenShortcutSpacingEnabled = getBoolean(KEY_LOCKSCREEN_SHORTCUT_SPACING_ENABLED, false),
+    lockscreenShortcutSpacing = getFloat(KEY_LOCKSCREEN_SHORTCUT_SPACING, 0f).coerceIn(0f, 48f),
+    lockscreenShortcutIconSizeEnabled = getBoolean(KEY_LOCKSCREEN_SHORTCUT_ICON_SIZE_ENABLED, false),
+    lockscreenShortcutIconSize = getFloat(KEY_LOCKSCREEN_SHORTCUT_ICON_SIZE, 32f).coerceIn(16f, 64f),
     shortcutIconColorMode = getInt(KEY_SHORTCUT_ICON_COLOR_MODE, 0).coerceIn(0, 2),
     shortcutPureColor = getInt(KEY_SHORTCUT_PURE_COLOR, 0x73FFFFFF),
     shortcutAdvancedMaterialColor = getInt(KEY_SHORTCUT_ADVANCED_MATERIAL_COLOR, 0xFFFFFFFF.toInt()),
-    shortcutAdvancedMaterialOpacity = getInt(KEY_SHORTCUT_ADVANCED_MATERIAL_OPACITY, 14).coerceIn(0, 35),
-    shortcutAdvancedMaterialBlurRadius = getInt(KEY_SHORTCUT_ADVANCED_MATERIAL_BLUR_RADIUS, 10).coerceIn(0, 10),
+    shortcutAdvancedMaterialOpacity = getInt(KEY_SHORTCUT_ADVANCED_MATERIAL_OPACITY, 14).coerceIn(0, 100),
+    shortcutAdvancedMaterialBlurRadius = getInt(KEY_SHORTCUT_ADVANCED_MATERIAL_BLUR_RADIUS, 10).coerceIn(0, 40),
     shortcutAdvancedMaterialHighlight = getBoolean(KEY_SHORTCUT_ADVANCED_MATERIAL_HIGHLIGHT, false),
     shortcutSoftGlassColor = getInt(KEY_SHORTCUT_SOFT_GLASS_COLOR, 0xFFFFFFFF.toInt()),
-    shortcutSoftGlassOpacity = getInt(KEY_SHORTCUT_SOFT_GLASS_OPACITY, 10).coerceIn(0, 35),
-    shortcutSoftGlassBackdropBlurRadius = getInt(KEY_SHORTCUT_SOFT_GLASS_BACKDROP_BLUR_RADIUS, 10).coerceIn(0, 10),
-    shortcutSoftGlassBlurRadius = getInt(KEY_SHORTCUT_SOFT_GLASS_BLUR_RADIUS, 10).coerceIn(0, 10),
+    shortcutSoftGlassOpacity = getInt(KEY_SHORTCUT_SOFT_GLASS_OPACITY, 10).coerceIn(0, 100),
+    shortcutSoftGlassBackdropBlurRadius = getInt(KEY_SHORTCUT_SOFT_GLASS_BACKDROP_BLUR_RADIUS, 10).coerceIn(0, 40),
+    shortcutSoftGlassBlurRadius = getInt(KEY_SHORTCUT_SOFT_GLASS_BLUR_RADIUS, 10).coerceIn(0, 40),
     shortcutSoftGlassLuminance = getFloat(KEY_SHORTCUT_SOFT_GLASS_LUMINANCE, 0.14f).coerceIn(0f, 0.4f),
+    lockscreenMiniPlayerEnabled = getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, false),
+    lockscreenMiniPlayerHideMediaNotification = getBoolean(
+        KEY_LOCKSCREEN_MINI_PLAYER_HIDE_MEDIA_NOTIFICATION,
+        false,
+    ),
+    lockscreenMiniPlayerBackgroundMode = getInt(KEY_LOCKSCREEN_MINI_PLAYER_BACKGROUND_MODE, 0)
+        .coerceIn(0, 3),
+    lockscreenMiniPlayerWidth = getFloat(KEY_LOCKSCREEN_MINI_PLAYER_WIDTH, 240f)
+        .coerceIn(160f, 360f),
+    lockscreenMiniPlayerHeight = readMiniPlayerHeightRadius(),
+    miniPlayerPureColor = getInt(KEY_MINI_PLAYER_PURE_COLOR, 0x73000000),
+    miniPlayerAdvancedMaterialColor = getInt(
+        KEY_MINI_PLAYER_ADVANCED_MATERIAL_COLOR,
+        0xFFFFFFFF.toInt(),
+    ),
+    miniPlayerAdvancedMaterialOpacity = getInt(KEY_MINI_PLAYER_ADVANCED_MATERIAL_OPACITY, 14)
+        .coerceIn(0, 100),
+    miniPlayerAdvancedMaterialBlurRadius = getInt(KEY_MINI_PLAYER_ADVANCED_MATERIAL_BLUR_RADIUS, 10)
+        .coerceIn(0, 40),
+    miniPlayerAdvancedMaterialHighlight = getBoolean(
+        KEY_MINI_PLAYER_ADVANCED_MATERIAL_HIGHLIGHT,
+        false,
+    ),
+    miniPlayerSoftGlassColor = getInt(KEY_MINI_PLAYER_SOFT_GLASS_COLOR, 0xFFFFFFFF.toInt()),
+    miniPlayerSoftGlassOpacity = getInt(KEY_MINI_PLAYER_SOFT_GLASS_OPACITY, 10).coerceIn(0, 100),
+    miniPlayerSoftGlassBackdropBlurRadius = getInt(
+        KEY_MINI_PLAYER_SOFT_GLASS_BACKDROP_BLUR_RADIUS,
+        10,
+    ).coerceIn(0, 40),
+    miniPlayerSoftGlassBlurRadius = getInt(KEY_MINI_PLAYER_SOFT_GLASS_BLUR_RADIUS, 10)
+        .coerceIn(0, 40),
+    miniPlayerSoftGlassLuminance = getFloat(KEY_MINI_PLAYER_SOFT_GLASS_LUMINANCE, 0.14f)
+        .coerceIn(0f, 0.4f),
+    keepSoftGlassAfterGlobalTheme = getBoolean(KEY_KEEP_SOFT_GLASS_AFTER_GLOBAL_THEME, false),
+    removeClockMaterialLimit = getBoolean(KEY_REMOVE_CLOCK_MATERIAL_LIMIT, false),
+    hideStatusBarNetworkType = getBoolean(KEY_HIDE_STATUS_BAR_NETWORK_TYPE, false),
+    hideStatusBarWifiStandard = getBoolean(KEY_HIDE_STATUS_BAR_WIFI_STANDARD, false),
+    hideStatusBarClockText = getBoolean(KEY_HIDE_STATUS_BAR_CLOCK_TEXT, false),
+    hideStatusBarNetworkActivity = getBoolean(KEY_HIDE_STATUS_BAR_NETWORK_ACTIVITY, false),
     themeMode = getString(KEY_THEME_MODE, "system").orEmpty().ifBlank { "system" },
     navigationStyle = getString(KEY_NAVIGATION_STYLE, "hyper_os").orEmpty().ifBlank { "hyper_os" },
     predictiveBackEnabled = getBoolean(KEY_PREDICTIVE_BACK_ENABLED, true),
     predictiveBackProgress = getInt(KEY_PREDICTIVE_BACK_PROGRESS, 90).coerceIn(10, 100),
 )
+}
 
 private fun SharedPreferences.Editor.removeLegacyIslandPreferences(): SharedPreferences.Editor =
     remove(LEGACY_EXPANDED_ISLAND_BACKGROUND_COLOR)
@@ -378,7 +595,7 @@ fun SharedPreferences.getMaterialOverride(key: String): MaterialOverride =
         if (key == KEY_NOTIFICATION_CENTER_BACKGROUND_MATERIAL || key == KEY_CONTROL_CENTER_BACKGROUND_MATERIAL) {
             value.copy(
                 blurPercent = value.blurPercent.coerceIn(0, 100),
-                alpha = if (value.enabled) value.alpha.coerceIn(-100, -65) else value.alpha,
+                alpha = if (value.enabled) value.alpha.coerceIn(-100, 0) else value.alpha,
             )
         } else {
             value
@@ -391,7 +608,7 @@ private fun parseMaterialOverride(encoded: String?): MaterialOverride {
         parts.getOrNull(index)?.toIntOrNull()?.coerceIn(range) ?: fallback
     return MaterialOverride(
         enabled = parts.getOrNull(0)?.toBooleanStrictOrNull() ?: false,
-        glassRadius = int(1, 0..10, 0),
+        glassRadius = int(1, 0..40, 0),
         blurPercent = int(2, 0..200, 100),
         scalePercent = int(3, 0..200, 100),
         brightness = int(4, -30..30, 0),
@@ -431,9 +648,17 @@ fun HookSettings.importShadePreset(payload: String): HookSettings {
     val imported = parseShadePreset(payload).settings
     return copy(
         notificationElementsMaterial = imported.notificationElementsMaterial,
-        controlCenterElementsMaterial = imported.controlCenterElementsMaterial,
+        controlCenterElementsMaterial = if (shadeSettingsUnified) {
+            imported.notificationElementsMaterial
+        } else {
+            imported.controlCenterElementsMaterial
+        },
         notificationCenterBackgroundMaterial = imported.notificationCenterBackgroundMaterial,
-        controlCenterBackgroundMaterial = imported.controlCenterBackgroundMaterial,
+        controlCenterBackgroundMaterial = if (shadeSettingsUnified) {
+            imported.notificationCenterBackgroundMaterial
+        } else {
+            imported.controlCenterBackgroundMaterial
+        },
     )
 }
 
@@ -467,6 +692,13 @@ private fun SharedPreferences.getGlassTuning(key: String): GlassTuning {
     )
 }
 
+internal fun HookSettings.rasterWallpaperUriList(): List<String> = runCatching {
+    val values = org.json.JSONArray(rasterWallpaperUris)
+    List(values.length()) { index -> values.getString(index) }.filter { it.isNotBlank() }
+}.getOrDefault(emptyList())
+
+internal fun encodeRasterWallpaperUris(uris: List<String>): String = org.json.JSONArray(uris).toString()
+
 private fun GlassTuning.serialize(): String =
     "$blurPercent|$opacity|${color.toLong()}|$customColorEnabled"
 
@@ -479,6 +711,7 @@ private fun SharedPreferences.write(value: HookSettings) {
         .putString(KEY_CONTROL_CENTER_ELEMENTS_MATERIAL, value.controlCenterElementsMaterial.serialize())
         .putString(KEY_NOTIFICATION_CENTER_BACKGROUND_MATERIAL, value.notificationCenterBackgroundMaterial.serialize())
         .putString(KEY_CONTROL_CENTER_BACKGROUND_MATERIAL, value.controlCenterBackgroundMaterial.serialize())
+        .putBoolean(KEY_SHADE_SETTINGS_UNIFIED, value.shadeSettingsUnified)
         .putBoolean(
             KEY_REMOVE_FOCUS_AND_ISLAND_WHITELIST_LIMIT,
             value.removeFocusAndIslandWhitelistLimit,
@@ -491,30 +724,68 @@ private fun SharedPreferences.write(value: HookSettings) {
         .putInt(KEY_EXPANDED_ISLAND_GLASS_LARGE_BLUR_RADIUS, value.expandedIslandGlassLargeBlurRadius)
         .putInt(KEY_EXPANDED_ISLAND_SELF_BLUR_RADIUS, value.expandedIslandSelfBlurRadius)
         .putBoolean(KEY_EXPANDED_ISLAND_SHOW_HIGHLIGHT, value.expandedIslandShowHighlight)
+        .putBoolean(
+            KEY_SUPER_XIAOAI_GLOBAL_SEARCH_APPEARANCE,
+            value.superXiaoAiGlobalSearchAppearance,
+        )
         .putBoolean(KEY_CLOCK_ENABLED, value.clockEnabled)
         .putFloat(KEY_CLOCK_SIZE, value.clockSize)
+        .putBoolean(KEY_STATUS_DIMENSION_DELTAS_V1, true)
         .putBoolean(KEY_PADDING_END_ENABLED, value.paddingEndEnabled)
         .putFloat(KEY_PADDING_END, value.paddingEnd)
+        .apply {
+            if (value.paddingEndLegacyAbsolute != null) putFloat(KEY_PADDING_END_LEGACY_ABSOLUTE, value.paddingEndLegacyAbsolute)
+            else remove(KEY_PADDING_END_LEGACY_ABSOLUTE)
+        }
         .putBoolean(KEY_PADDING_START_ENABLED, value.paddingStartEnabled)
         .putFloat(KEY_PADDING_START, value.paddingStart)
         .putBoolean(KEY_HEIGHT_ENABLED, value.heightEnabled)
         .putInt(KEY_STATUS_BAR_HEIGHT, value.statusBarHeight)
         .putBoolean(KEY_PADDING_TOP_ENABLED, value.paddingTopEnabled)
         .putFloat(KEY_PADDING_TOP, value.paddingTop)
+        .apply {
+            if (value.paddingTopLegacyAbsolute != null) putFloat(KEY_PADDING_TOP_LEGACY_ABSOLUTE, value.paddingTopLegacyAbsolute)
+            else remove(KEY_PADDING_TOP_LEGACY_ABSOLUTE)
+        }
         .putBoolean(KEY_TOP_BUTTONS_RADIUS_ENABLED, value.topButtonsRadiusEnabled)
         .putFloat(KEY_TOP_BUTTONS_RADIUS, value.topButtonsRadius)
         .putBoolean(KEY_MEDIA_CARD_RADIUS_ENABLED, value.mediaCardRadiusEnabled)
         .putFloat(KEY_MEDIA_CARD_RADIUS, value.mediaCardRadius)
         .putBoolean(KEY_SLIDER_RADIUS_ENABLED, value.sliderRadiusEnabled)
         .putFloat(KEY_SLIDER_RADIUS, value.sliderRadius)
+        .putBoolean(KEY_CONTROL_BOTTOM_BUTTONS_RADIUS_ENABLED, value.controlBottomButtonsRadiusEnabled)
+        .putFloat(KEY_CONTROL_BOTTOM_BUTTONS_RADIUS, value.controlBottomButtonsRadius)
+        .putInt(KEY_VOLUME_PANEL_BLUR_RADIUS, value.volumePanelBlurRadius)
+        .putInt(KEY_VOLUME_PANEL_GLASS_STRENGTH, value.volumePanelGlassStrength)
+        .putFloat(KEY_VOLUME_PANEL_CORNER_RADIUS, value.volumePanelCornerRadius)
+        .putInt(KEY_VOLUME_PANEL_BACKGROUND_OPACITY, value.volumePanelBackgroundOpacity)
+        .putBoolean(KEY_VOLUME_PANEL_MATERIAL_ENABLED, value.volumePanelMaterialEnabled)
+        .remove(KEY_VOLUME_PANEL_BACKGROUND_TRANSPARENCY_LEGACY)
         .putBoolean(KEY_DEVICE_CENTER_RADIUS_ENABLED, value.deviceCenterRadiusEnabled)
         .putFloat(KEY_DEVICE_CENTER_RADIUS, value.deviceCenterRadius)
         .putBoolean(KEY_REMOVE_DEPTH_IMAGE_LIMIT, value.removeDepthImageLimit)
-        .putInt(KEY_NOTIFICATION_FOD_MODE, value.notificationFodMode)
-        .putBoolean(KEY_HIDE_LOCKSCREEN_CHARGING_TEXT, value.hideLockscreenChargingText)
+        .putBoolean(KEY_RASTER_WALLPAPER_ENABLED, value.rasterWallpaperEnabled)
+        .putString(KEY_RASTER_WALLPAPER_URIS, value.rasterWallpaperUris)
+        .putInt(KEY_RASTER_WALLPAPER_SENSITIVITY_PRESET, value.rasterWallpaperSensitivityPreset)
+        .putFloat(KEY_RASTER_WALLPAPER_CUSTOM_SENSITIVITY, value.rasterWallpaperCustomSensitivity)
+        .putBoolean(KEY_NOTIFICATION_FOD_POSITION_LIMIT_REMOVED, value.notificationFodPositionLimitRemoved)
+        .putInt(KEY_FINGERPRINT_HIDE_MODE, value.fingerprintHideMode)
+        .putBoolean(
+            KEY_HIDE_LOCKSCREEN_CHARGING_TEXT,
+            value.hideLockscreenChargingText || value.lockscreenMiniPlayerEnabled,
+        )
         .putInt(KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_MODE, value.lockscreenShortcutBackgroundMode)
         .putBoolean(KEY_LOCKSCREEN_SHORTCUT_GLASS_ENABLED, value.lockscreenShortcutBackgroundMode != 0)
         .putFloat(KEY_LOCKSCREEN_SHORTCUT_GLASS_RADIUS, value.lockscreenShortcutGlassRadius)
+        .putBoolean(
+            KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_RADIUS_ENABLED,
+            value.lockscreenShortcutBackgroundRadiusEnabled,
+        )
+        .putFloat(KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_RADIUS, value.lockscreenShortcutBackgroundRadius)
+        .putBoolean(KEY_LOCKSCREEN_SHORTCUT_SPACING_ENABLED, value.lockscreenShortcutSpacingEnabled)
+        .putFloat(KEY_LOCKSCREEN_SHORTCUT_SPACING, value.lockscreenShortcutSpacing)
+        .putBoolean(KEY_LOCKSCREEN_SHORTCUT_ICON_SIZE_ENABLED, value.lockscreenShortcutIconSizeEnabled)
+        .putFloat(KEY_LOCKSCREEN_SHORTCUT_ICON_SIZE, value.lockscreenShortcutIconSize)
         .putInt(KEY_SHORTCUT_ICON_COLOR_MODE, value.shortcutIconColorMode)
         .putInt(KEY_SHORTCUT_PURE_COLOR, value.shortcutPureColor)
         .putInt(KEY_SHORTCUT_ADVANCED_MATERIAL_COLOR, value.shortcutAdvancedMaterialColor)
@@ -526,6 +797,34 @@ private fun SharedPreferences.write(value: HookSettings) {
         .putInt(KEY_SHORTCUT_SOFT_GLASS_BACKDROP_BLUR_RADIUS, value.shortcutSoftGlassBackdropBlurRadius)
         .putInt(KEY_SHORTCUT_SOFT_GLASS_BLUR_RADIUS, value.shortcutSoftGlassBlurRadius)
         .putFloat(KEY_SHORTCUT_SOFT_GLASS_LUMINANCE, value.shortcutSoftGlassLuminance)
+        .putBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, value.lockscreenMiniPlayerEnabled)
+        .putBoolean(
+            KEY_LOCKSCREEN_MINI_PLAYER_HIDE_MEDIA_NOTIFICATION,
+            value.lockscreenMiniPlayerHideMediaNotification,
+        )
+        .putInt(KEY_LOCKSCREEN_MINI_PLAYER_BACKGROUND_MODE, value.lockscreenMiniPlayerBackgroundMode)
+        .putFloat(KEY_LOCKSCREEN_MINI_PLAYER_WIDTH, value.lockscreenMiniPlayerWidth)
+        .putFloat(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT, value.lockscreenMiniPlayerHeight)
+        .putBoolean(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT_RADIUS_MIGRATED, true)
+        .putInt(KEY_MINI_PLAYER_PURE_COLOR, value.miniPlayerPureColor)
+        .putInt(KEY_MINI_PLAYER_ADVANCED_MATERIAL_COLOR, value.miniPlayerAdvancedMaterialColor)
+        .putInt(KEY_MINI_PLAYER_ADVANCED_MATERIAL_OPACITY, value.miniPlayerAdvancedMaterialOpacity)
+        .putInt(KEY_MINI_PLAYER_ADVANCED_MATERIAL_BLUR_RADIUS, value.miniPlayerAdvancedMaterialBlurRadius)
+        .putBoolean(KEY_MINI_PLAYER_ADVANCED_MATERIAL_HIGHLIGHT, value.miniPlayerAdvancedMaterialHighlight)
+        .putInt(KEY_MINI_PLAYER_SOFT_GLASS_COLOR, value.miniPlayerSoftGlassColor)
+        .putInt(KEY_MINI_PLAYER_SOFT_GLASS_OPACITY, value.miniPlayerSoftGlassOpacity)
+        .putInt(
+            KEY_MINI_PLAYER_SOFT_GLASS_BACKDROP_BLUR_RADIUS,
+            value.miniPlayerSoftGlassBackdropBlurRadius,
+        )
+        .putInt(KEY_MINI_PLAYER_SOFT_GLASS_BLUR_RADIUS, value.miniPlayerSoftGlassBlurRadius)
+        .putFloat(KEY_MINI_PLAYER_SOFT_GLASS_LUMINANCE, value.miniPlayerSoftGlassLuminance)
+        .putBoolean(KEY_KEEP_SOFT_GLASS_AFTER_GLOBAL_THEME, value.keepSoftGlassAfterGlobalTheme)
+        .putBoolean(KEY_REMOVE_CLOCK_MATERIAL_LIMIT, value.removeClockMaterialLimit)
+        .putBoolean(KEY_HIDE_STATUS_BAR_NETWORK_TYPE, value.hideStatusBarNetworkType)
+        .putBoolean(KEY_HIDE_STATUS_BAR_WIFI_STANDARD, value.hideStatusBarWifiStandard)
+        .putBoolean(KEY_HIDE_STATUS_BAR_CLOCK_TEXT, value.hideStatusBarClockText)
+        .putBoolean(KEY_HIDE_STATUS_BAR_NETWORK_ACTIVITY, value.hideStatusBarNetworkActivity)
         .putString(KEY_THEME_MODE, value.themeMode)
         .putString(KEY_NAVIGATION_STYLE, value.navigationStyle)
         .putBoolean(KEY_PREDICTIVE_BACK_ENABLED, value.predictiveBackEnabled)

@@ -40,6 +40,9 @@ public final class LeicaUnlockHook extends XposedModule {
     private final Map<String, Method> nativeFocalMethods = new ConcurrentHashMap<>();
     private final Map<CaptureRequest.Builder, Integer> legendaryBuilders =
             Collections.synchronizedMap(new WeakHashMap<>());
+    /** Builder.set() is hooked below; prevent fallback writes from re-entering mode tracking. */
+    private final ThreadLocal<Boolean> legendaryFallbackWrite =
+            ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final Set<Class<?>> galleryWatermarkManagers = ConcurrentHashMap.newKeySet();
     private final Set<Class<?>> galleryWatermarkCapabilityClasses = ConcurrentHashMap.newKeySet();
     private final Set<Class<?>> galleryWatermarkUsageClasses = ConcurrentHashMap.newKeySet();
@@ -478,6 +481,9 @@ public final class LeicaUnlockHook extends XposedModule {
                         if (!isEnabled()) {
                             return chain.proceed();
                         }
+                        if (Boolean.TRUE.equals(legendaryFallbackWrite.get())) {
+                            return chain.proceed();
+                        }
                         if (!(chain.getThisObject() instanceof CaptureRequest.Builder builder)
                                 || !(chain.getArg(0) instanceof CaptureRequest.Key<?> key)) {
                             return chain.proceed();
@@ -491,7 +497,15 @@ public final class LeicaUnlockHook extends XposedModule {
                             } else {
                                 legendaryBuilders.put(builder, legendaryMode);
                             }
-                            Object result = chain.proceed();
+                            Object result;
+                            try {
+                                // A vendor tag can be advertised by the APK but absent on the
+                                // device HAL. Do not let that optional write crash the camera.
+                                result = chain.proceed();
+                            } catch (RuntimeException | LinkageError error) {
+                                log(Log.WARN, TAG, "Legendary vendor tag is unavailable; using Camera2 fallback", error);
+                                result = null;
+                            }
                             if (legendaryMode != null) {
                                 applyLegendaryCamera2Fallback(builder, legendaryMode);
                             }
@@ -815,6 +829,10 @@ public final class LeicaUnlockHook extends XposedModule {
     }
 
     private void applyLegendaryCamera2Fallback(CaptureRequest.Builder builder, int legendaryMode) {
+        if (Boolean.TRUE.equals(legendaryFallbackWrite.get())) {
+            return;
+        }
+        legendaryFallbackWrite.set(Boolean.TRUE);
         try {
             builder.set(
                     CaptureRequest.CONTROL_EFFECT_MODE,
@@ -830,6 +848,8 @@ public final class LeicaUnlockHook extends XposedModule {
             );
         } catch (RuntimeException | LinkageError error) {
             log(Log.WARN, TAG, "Unable to apply Legendary Camera2 compatibility parameters", error);
+        } finally {
+            legendaryFallbackWrite.remove();
         }
     }
 

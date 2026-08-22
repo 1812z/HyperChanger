@@ -54,7 +54,10 @@ object SystemUiRestarter {
 enum class ScopeApplication(val title: String, val packageName: String) {
     SYSTEM_UI("\u7cfb\u7edf\u754c\u9762", "com.android.systemui"),
     AOD("\u606f\u5c4f\u4e0e\u9501\u5c4f\u7f16\u8f91", "com.miui.aod"),
+    SUBSCREEN_CENTER("\u80cc\u5c4f", "com.xiaomi.subscreencenter"),
     GALLERY("\u76f8\u518c", "com.miui.gallery"),
     CAMERA("\u76f8\u673a", "com.android.camera"),
     MEDIA_EDITOR("\u5c0f\u7c73\u76f8\u518c-\u7f16\u8f91", "com.miui.mediaeditor"),
+    SUPER_XIAOAI_IME("\u8d85\u7ea7\u5c0f\u7231\u8f93\u5165\u6cd5", "com.xiaomi.type"),
+    SETTINGS("\u8bbe\u7f6e", "com.android.settings"),
 }

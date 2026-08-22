@@ -40,7 +40,13 @@ The project is in beta. HyperOS framework classes and resources can differ by de
 - Customize compatible Dynamic Island and focus-notification behavior.
 - Adjust status-bar presentation where supported by the target build.
 - Control selected lock-screen effects, including charging text and shortcut appearance.
+- Keep System UI soft-glass effects after applying a global theme.
+- Remove the OTA conversion limit for glass and overlay AOD clock materials.
 - Restart individual scoped processes from the app after changing settings.
+
+### Super XiaoAi input method
+
+- Enable the search page's special input-method appearance globally.
 
 ### Camera and Gallery
 
@@ -72,6 +78,7 @@ Enable HyperChanger in LSPosed and select only the scopes required for the featu
 | Xiaomi Gallery | `com.miui.gallery` |
 | Hyper Gallery plugin | `com.hyper.gallery.plugin` |
 | Media editor | `com.miui.mediaeditor` |
+| Super XiaoAi input method | `com.xiaomi.type` |
 
 Some packages are optional and may not be installed on every device. LSPosed will only activate hooks for installed, selected scopes.
 

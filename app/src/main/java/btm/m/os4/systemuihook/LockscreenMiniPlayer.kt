@@ -1,0 +1,561 @@
+package btm.m.os4.systemuihook
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Outline
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.media.MediaMetadata
+import android.media.AudioManager
+import android.view.KeyEvent
+import android.media.session.MediaController
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
+import android.os.Handler
+import android.os.Looper
+import android.text.TextUtils
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.view.ViewOutlineProvider
+import android.view.ViewTreeObserver
+import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
+import java.util.Collections
+import java.util.WeakHashMap
+import kotlin.math.max
+import kotlin.math.min
+
+internal const val MINI_PLAYER_BACKGROUND_DEFAULT = 0
+internal const val MINI_PLAYER_BACKGROUND_PURE = 1
+internal const val MINI_PLAYER_BACKGROUND_ADVANCED = 2
+internal const val MINI_PLAYER_BACKGROUND_SOFT_GLASS = 3
+
+internal data class MiniPlayerAppearance(
+    val backgroundMode: Int,
+    val widthDp: Float,
+    val heightDp: Float,
+    val pureColor: Int = 0x73000000,
+    val advancedColor: Int = 0xFFFFFFFF.toInt(),
+    val advancedOpacity: Int = 14,
+    val advancedBlurRadius: Int = 80,
+    val advancedHighlight: Boolean = false,
+    val softGlassColor: Int = 0xFFFFFFFF.toInt(),
+    val softGlassOpacity: Int = 10,
+    val softGlassBackdropBlurRadius: Int = 80,
+    val softGlassBlurRadius: Int = 36,
+    val softGlassLuminance: Float = 0.14f,
+)
+
+/** Values sourced from SystemUI's NotificationMediaManager rather than an inferred session list. */
+internal object LockscreenMediaBridge {
+    @Volatile var controller: MediaController? = null
+        private set
+    @Volatile var notificationKey: String? = null
+        private set
+
+    fun update(controller: MediaController?, notificationKey: String?) {
+        this.controller = controller
+        this.notificationKey = notificationKey
+    }
+}
+
+/** The SystemUI long-press menu is not part of the shortcut view hierarchy. */
+internal object LockscreenCustomizationMenuBridge {
+    private val listeners = Collections.newSetFromMap(WeakHashMap<LockscreenMiniPlayerController, Boolean>())
+    @Volatile private var visible = false
+
+    fun register(controller: LockscreenMiniPlayerController) {
+        synchronized(listeners) { listeners += controller }
+        controller.onCustomizationMenuVisibilityChanged(visible)
+    }
+
+    fun unregister(controller: LockscreenMiniPlayerController) {
+        synchronized(listeners) { listeners -= controller }
+    }
+
+    fun setVisible(value: Boolean) {
+        visible = value
+        val snapshot = synchronized(listeners) { listeners.toList() }
+        snapshot.forEach { it.onCustomizationMenuVisibilityChanged(value) }
+    }
+}
+
+/** Native lockscreen card; SystemUI owns media sessions and the final view hierarchy. */
+internal class LockscreenMiniPlayerController(
+    private val host: ViewGroup,
+    private val leftShortcut: View,
+    private val rightShortcut: View,
+    private val enabled: () -> Boolean,
+    private val appearance: () -> MiniPlayerAppearance,
+    private val applyPlatformMaterial: (ImageView, MiniPlayerAppearance) -> Unit,
+) {
+    private val context: Context = host.context
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val sessions = context.getSystemService(MediaSessionManager::class.java)
+    private val audioManager = context.getSystemService(AudioManager::class.java)
+    private var activeController: MediaController? = null
+    private var player: LockscreenMiniPlayerView? = null
+    private var refreshPosted = false
+    private var positionPosted = false
+    private var baseTranslationX = 0f
+    private var baseTranslationY = 0f
+    private var customizationLift = 0f
+    private var customizationVisible = false
+    private var customizationMenuVisible = false
+    private val globalLayoutListener = ViewTreeObserver.OnGlobalLayoutListener {
+        updateCustomizationLift()
+    }
+
+    private val sessionCallback = object : MediaSessionManager.OnActiveSessionsChangedListener {
+        override fun onActiveSessionsChanged(controllers: MutableList<MediaController>?) {
+            selectController(controllers.orEmpty())
+        }
+    }
+    private val controllerCallback = object : MediaController.Callback() {
+        override fun onPlaybackStateChanged(state: PlaybackState?) { scheduleRefresh() }
+        override fun onMetadataChanged(metadata: MediaMetadata?) { scheduleRefresh() }
+    }
+
+    init {
+        // The card is centered between the shortcuts and may be taller than the shortcut
+        // container's measured bounds. Keep the configured dp height from being clipped.
+        host.clipChildren = false
+        host.clipToPadding = false
+        host.rootView.viewTreeObserver.addOnGlobalLayoutListener(globalLayoutListener)
+        LockscreenCustomizationMenuBridge.register(this)
+        host.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
+        leftShortcut.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
+        rightShortcut.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
+        runCatching {
+            sessions?.addOnActiveSessionsChangedListener(sessionCallback, null, mainHandler)
+            selectController(sessions?.getActiveSessions(null).orEmpty())
+        }.onFailure { scheduleRefresh() }
+    }
+
+    fun destroy() {
+        LockscreenCustomizationMenuBridge.unregister(this)
+        runCatching { host.rootView.viewTreeObserver.removeOnGlobalLayoutListener(globalLayoutListener) }
+        runCatching { sessions?.removeOnActiveSessionsChangedListener(sessionCallback) }
+        runCatching { activeController?.unregisterCallback(controllerCallback) }
+        runCatching { player?.let(host::removeView) }
+        activeController = null
+        player = null
+        mainHandler.removeCallbacksAndMessages(null)
+        positionPosted = false
+    }
+
+    private fun updateCustomizationLift() {
+        val view = player ?: return
+        val root = host.rootView as? ViewGroup ?: return
+        if (!customizationMenuVisible) {
+            animateCustomizationLift(view, false, 0f)
+            return
+        }
+        val customButton = findCustomizationButton(root)
+        if (customButton == null) {
+            // onLongPress fires before the menu view has completed its first layout.
+            animateCustomizationLift(view, true, -dp(64f).toFloat())
+            return
+        }
+        val playerLocation = IntArray(2).also(view::getLocationOnScreen)
+        val buttonLocation = IntArray(2).also(customButton::getLocationOnScreen)
+        val overlap = playerLocation[1] + view.height - buttonLocation[1]
+        val lift = if (overlap > 0) -(overlap + dp(12f)).toFloat() else 0f
+        animateCustomizationLift(view, true, lift)
+    }
+
+    private fun animateCustomizationLift(view: View, visible: Boolean, lift: Float) {
+        if (customizationVisible == visible && kotlin.math.abs(customizationLift - lift) < 1f) return
+        customizationVisible = visible
+        customizationLift = lift
+        view.animate()
+            .translationY(baseTranslationY + lift)
+            .setDuration(280L)
+            .setInterpolator(android.view.animation.DecelerateInterpolator())
+            .start()
+    }
+
+    internal fun onCustomizationMenuVisibilityChanged(visible: Boolean) {
+        customizationMenuVisible = visible
+        mainHandler.post { updateCustomizationLift() }
+    }
+
+    private fun findCustomizationButton(root: ViewGroup): View? {
+        fun matches(view: View): Boolean {
+            if (view.visibility != View.VISIBLE || view.alpha <= 0f || view.width <= 0 || view.height <= 0) return false
+            val text = (view as? TextView)?.text?.toString().orEmpty()
+            val description = view.contentDescription?.toString().orEmpty()
+            val idName = runCatching { context.resources.getResourceEntryName(view.id) }.getOrDefault("")
+            val haystack = "$text $description $idName".lowercase(java.util.Locale.ROOT)
+            return haystack.contains("自定义锁屏") ||
+                haystack.contains("custom lock") ||
+                (haystack.contains("custom") && haystack.contains("lock"))
+        }
+        fun search(view: View): View? {
+            if (view !== this@LockscreenMiniPlayerController.player && matches(view)) return view
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) search(view.getChildAt(index))?.let { return it }
+            }
+            return null
+        }
+        return search(root)
+    }
+
+    private fun selectController(controllers: List<MediaController>) {
+        val platformController = LockscreenMediaBridge.controller
+        val selected = platformController?.takeIf(::isUsable)
+            ?: controllers.firstOrNull(::isUsable)
+            ?: controllers.firstOrNull { it.metadata != null }
+        setActiveController(selected)
+        refresh()
+    }
+
+    private fun setActiveController(selected: MediaController?) {
+        if (selected?.sessionToken != activeController?.sessionToken) {
+            runCatching { activeController?.unregisterCallback(controllerCallback) }
+            activeController = selected
+            runCatching { selected?.registerCallback(controllerCallback, mainHandler) }
+        }
+    }
+
+    private fun isUsable(controller: MediaController): Boolean = when (controller.playbackState?.state) {
+        PlaybackState.STATE_PLAYING,
+        PlaybackState.STATE_PAUSED,
+        PlaybackState.STATE_BUFFERING,
+        PlaybackState.STATE_FAST_FORWARDING,
+        PlaybackState.STATE_REWINDING -> true
+        else -> false
+    }
+
+    private fun refresh() {
+        runCatching { refreshUnsafe() }
+    }
+
+    private fun scheduleRefresh() {
+        if (refreshPosted) return
+        refreshPosted = true
+        mainHandler.post {
+            refreshPosted = false
+            refresh()
+        }
+    }
+
+    private fun refreshUnsafe() {
+        // NotificationMediaManager can publish a controller whose playback state is already
+        // destroyed. Do not call selectController() here: that method refreshes synchronously,
+        // and selecting an unusable bridge controller used to recurse until SystemUI crashed.
+        LockscreenMediaBridge.controller?.let { platformController ->
+            if (platformController.sessionToken != activeController?.sessionToken) {
+                setActiveController(platformController.takeIf(::isUsable))
+            }
+        }
+        val controller = activeController
+        val state = controller?.playbackState
+        if (!enabled() || controller == null || !isUsable(controller)) {
+            player?.visibility = View.GONE
+            return
+        }
+        val currentAppearance = appearance()
+        val view = player ?: LockscreenMiniPlayerView(context).also {
+            player = it
+            it.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
+            // The first refresh can happen before the shortcut row receives its final layout.
+            // Start with the configured dimensions instead of a transient default size.
+            host.addView(
+                it,
+                ViewGroup.LayoutParams(
+                    dp(currentAppearance.widthDp),
+                    dp(currentAppearance.heightDp * 2f).coerceAtLeast(dp(48f)),
+                ),
+            )
+        }
+        view.visibility = View.VISIBLE
+        view.bind(
+            title = controller.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
+                .ifBlank { "正在播放" },
+            artist = controller.metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
+                .ifBlank { controller.metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty() },
+            artwork = controller.metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+                ?: controller.metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART),
+            playing = state?.state == PlaybackState.STATE_PLAYING,
+            appearance = currentAppearance,
+            applyPlatformMaterial = applyPlatformMaterial,
+            onToggle = ::togglePlaybackSafely,
+        )
+        position()
+    }
+
+    private fun togglePlaybackSafely() {
+        // TransportControls is a Binder proxy. A player can disappear between the click and
+        // the command, so dispatch on the SystemUI looper and contain every Binder failure.
+        runCatching {
+            mainHandler.post {
+                runCatching {
+                    // Refresh the session list at click time. Media apps can replace their
+                    // session without emitting an active-session callback to SystemUI.
+                    val current = sessions?.getActiveSessions(null).orEmpty()
+                    if (current.isNotEmpty()) selectController(current)
+                    val controller = LockscreenMediaBridge.controller ?: activeController
+                    val state = controller?.playbackState
+                    val playing = state?.state == PlaybackState.STATE_PLAYING
+                    val action = if (playing) PlaybackState.ACTION_PAUSE else PlaybackState.ACTION_PLAY
+                    val supportsAction = state != null && state.actions and action != 0L
+                    if (controller != null && supportsAction) {
+                        runCatching {
+                            if (playing) controller.transportControls.pause() else controller.transportControls.play()
+                        }.onFailure { dispatchMediaKeyFallback() }
+                    } else {
+                        dispatchMediaKeyFallback()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun dispatchMediaKeyFallback() {
+        val manager = audioManager ?: return
+        val now = android.os.SystemClock.uptimeMillis()
+        runCatching {
+            manager.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, 0))
+            manager.dispatchMediaKeyEvent(KeyEvent(now, android.os.SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, 0))
+        }
+    }
+
+    private fun schedulePosition() {
+        if (positionPosted) return
+        positionPosted = true
+        host.postOnAnimation {
+            positionPosted = false
+            position()
+        }
+    }
+
+    private fun position() {
+        val view = player ?: return
+        if (host.width <= 0 || leftShortcut.width <= 0 || rightShortcut.width <= 0) return
+        val hostLocation = IntArray(2).also(host::getLocationOnScreen)
+        val leftLocation = IntArray(2).also(leftShortcut::getLocationOnScreen)
+        val rightLocation = IntArray(2).also(rightShortcut::getLocationOnScreen)
+        val centerX = ((leftLocation[0] + leftShortcut.width / 2f) +
+            (rightLocation[0] + rightShortcut.width / 2f)) / 2f - hostLocation[0]
+        val centerY = ((leftLocation[1] + leftShortcut.height / 2f) +
+            (rightLocation[1] + rightShortcut.height / 2f)) / 2f - hostLocation[1]
+        val requested = appearance()
+        val horizontalRoom = min(centerX, host.width - centerX) * 2f - dp(12f)
+        val width = min(dp(requested.widthDp).toFloat(), min(host.width * .64f, horizontalRoom))
+            .toInt().coerceAtLeast(min(dp(160f), host.width))
+        // The setting shares the shortcut circle-radius unit. Render the corresponding diameter
+        // while keeping the platform's minimum card height of 48dp.
+        val height = dp(requested.heightDp * 2f).coerceAtLeast(dp(48f))
+        val params = view.layoutParams
+        if (params == null || params.width != width || params.height != height) {
+            val updated = params ?: ViewGroup.LayoutParams(width, height)
+            updated.width = width
+            updated.height = height
+            view.layoutParams = updated
+            // Do not calculate against the old child bounds. The parent will assign new
+            // left/top/width/height during the next layout pass, then the layout listener above
+            // will apply the final translation.
+            schedulePosition()
+            return
+        }
+        val actualWidth = view.width
+        val actualHeight = view.height
+        if (actualWidth <= 0 || actualHeight <= 0) {
+            schedulePosition()
+            return
+        }
+        // Preserve the requested center across parent layout passes.
+        baseTranslationX = centerX - actualWidth / 2f - view.left
+        baseTranslationY = centerY - actualHeight / 2f - view.top
+        view.translationX = baseTranslationX
+        view.translationY = baseTranslationY + customizationLift
+    }
+
+    private fun dp(value: Float): Int = (value * context.resources.displayMetrics.density + .5f).toInt()
+}
+
+private class LockscreenMiniPlayerView(context: Context) : FrameLayout(context) {
+    private val materialLayer = ImageView(context)
+    private val artwork = ImageView(context)
+    private val title = TextView(context)
+    private val artist = TextView(context)
+    private val text = LinearLayout(context)
+    private val toggle = ImageButton(context)
+    private val density = resources.displayMetrics.density
+    private var lastAppearance: MiniPlayerAppearance? = null
+
+    init {
+        clipToOutline = true
+        outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, view.height / 2f)
+            }
+        }
+        materialLayer.scaleType = ImageView.ScaleType.FIT_XY
+        materialLayer.clipToOutline = true
+        materialLayer.outlineProvider = outlineProvider
+        addView(materialLayer, LayoutParams(-1, -1))
+
+        artwork.scaleType = ImageView.ScaleType.CENTER_CROP
+        artwork.clipToOutline = true
+        artwork.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, dp(12).toFloat())
+            }
+        }
+        artwork.background = rounded(Color.rgb(55, 55, 55), dp(12).toFloat())
+        addView(artwork)
+
+        title.setTextColor(Color.WHITE)
+        title.textSize = 12.8f
+        title.maxLines = 1
+        title.ellipsize = TextUtils.TruncateAt.MARQUEE
+        title.isSelected = true
+        title.isSingleLine = true
+        title.setHorizontallyScrolling(true)
+        title.marqueeRepeatLimit = -1
+        title.includeFontPadding = false
+        title.setLineSpacing(0f, .5f)
+        title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
+        artist.setTextColor(Color.argb(232, 255, 255, 255))
+        artist.textSize = 12f
+        artist.maxLines = 1
+        artist.ellipsize = TextUtils.TruncateAt.MARQUEE
+        artist.isSelected = true
+        artist.isSingleLine = true
+        artist.setHorizontallyScrolling(true)
+        artist.marqueeRepeatLimit = -1
+        artist.includeFontPadding = false
+        artist.setLineSpacing(0f, .5f)
+        artist.setTypeface(artist.typeface, android.graphics.Typeface.BOLD)
+        text.orientation = LinearLayout.VERTICAL
+        text.gravity = Gravity.CENTER_VERTICAL
+        text.addView(title, LinearLayout.LayoutParams(-1, -2))
+        text.addView(artist, LinearLayout.LayoutParams(-1, -2))
+        artist.translationY = -dp(2).toFloat()
+        addView(text)
+
+        toggle.scaleType = ImageView.ScaleType.CENTER
+        toggle.setPadding(dp(8), dp(8), dp(8), dp(8))
+        // Keep a transparent touch target, but remove the decorative circular backing.
+        toggle.background = null
+        toggle.contentDescription = "播放或暂停"
+        addView(toggle)
+    }
+
+    fun bind(
+        title: String,
+        artist: String,
+        artwork: Bitmap?,
+        playing: Boolean,
+        appearance: MiniPlayerAppearance,
+        applyPlatformMaterial: (ImageView, MiniPlayerAppearance) -> Unit,
+        onToggle: () -> Unit,
+    ) {
+        if (lastAppearance != appearance) {
+            lastAppearance = appearance
+            applyAppearance(appearance, applyPlatformMaterial)
+            updateGeometry(appearance.heightDp)
+        }
+        this.title.text = title
+        this.artist.text = artist
+        this.artwork.setImageBitmap(artwork)
+        toggle.setImageDrawable(PlayerToggleDrawable(playing))
+        toggle.setOnClickListener { onToggle() }
+    }
+
+    private fun applyAppearance(
+        appearance: MiniPlayerAppearance,
+        applyPlatformMaterial: (ImageView, MiniPlayerAppearance) -> Unit,
+    ) {
+        materialLayer.setImageDrawable(
+            when (appearance.backgroundMode) {
+                MINI_PLAYER_BACKGROUND_PURE -> rounded(appearance.pureColor, dp(40).toFloat())
+                MINI_PLAYER_BACKGROUND_ADVANCED,
+                MINI_PLAYER_BACKGROUND_SOFT_GLASS -> rounded(Color.argb(1, 255, 255, 255), dp(40).toFloat())
+                else -> rounded(Color.argb(158, 31, 35, 36), dp(40).toFloat()).apply {
+                    setStroke(dp(1), Color.argb(78, 255, 255, 255))
+                }
+            },
+        )
+        if (appearance.backgroundMode == MINI_PLAYER_BACKGROUND_ADVANCED ||
+            appearance.backgroundMode == MINI_PLAYER_BACKGROUND_SOFT_GLASS
+        ) {
+            applyPlatformMaterial(materialLayer, appearance)
+        }
+    }
+
+    private fun updateGeometry(heightDp: Float) {
+        val height = dp(heightDp * 2f).coerceAtLeast(dp(48))
+        val verticalPadding = max(dp(7), height / 9)
+        val artworkSize = ((height - verticalPadding * 2) * .75f).toInt().coerceAtLeast(dp(24))
+        val horizontalPadding = max(dp(10), height / 7)
+        artwork.layoutParams = LayoutParams(artworkSize, artworkSize, Gravity.CENTER_VERTICAL).apply {
+            leftMargin = horizontalPadding
+        }
+        val toggleSize = dp(40).coerceAtMost((height - verticalPadding * 2).coerceAtLeast(dp(34)))
+        toggle.layoutParams = LayoutParams(toggleSize, toggleSize, Gravity.CENTER_VERTICAL or Gravity.END).apply {
+            rightMargin = max(dp(8), verticalPadding)
+        }
+        text.layoutParams = LayoutParams(-1, -1, Gravity.CENTER_VERTICAL).apply {
+            leftMargin = horizontalPadding + artworkSize + max(dp(10), height / 8)
+            rightMargin = toggleSize + max(dp(10), verticalPadding)
+        }
+        artwork.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, artworkSize * .2f)
+            }
+        }
+        invalidateOutline()
+    }
+
+    private fun rounded(color: Int, radius: Float): GradientDrawable = GradientDrawable().apply {
+        cornerRadius = radius
+        setColor(color)
+    }
+
+    private fun dp(value: Int): Int = (value * density + .5f).toInt()
+    private fun dp(value: Float): Int = (value * density + .5f).toInt()
+}
+
+private class PlayerToggleDrawable(private val playing: Boolean) : Drawable() {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+
+    override fun draw(canvas: Canvas) {
+        val width = bounds.width().toFloat()
+        val height = bounds.height().toFloat()
+        if (playing) {
+            val barWidth = width * .19f
+            val gap = width * .18f
+            val left = (width - barWidth * 2 - gap) / 2f
+            val top = height * .19f
+            val bottom = height * .81f
+            val radius = barWidth / 2f
+            canvas.drawRoundRect(left, top, left + barWidth, bottom, radius, radius, paint)
+            canvas.drawRoundRect(left + barWidth + gap, top, left + barWidth * 2 + gap, bottom, radius, radius, paint)
+        } else {
+            val path = Path().apply {
+                moveTo(width * .31f, height * .18f)
+                lineTo(width * .31f, height * .82f)
+                lineTo(width * .79f, height * .5f)
+                close()
+            }
+            canvas.drawPath(path, paint)
+        }
+    }
+
+    override fun setAlpha(alpha: Int) { paint.alpha = alpha }
+    override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) { paint.colorFilter = colorFilter }
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+}

@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
     <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-feature
+        android:name="android.software.live_wallpaper"
+        android:required="false" />
     <application
         android:name=".HookApplication"
         android:allowBackup="false"
@@ -19,5 +24,22 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".RasterWallpaperService"
+            android:exported="true"
+            android:label="@string/raster_wallpaper_description"
+            android:permission="android.permission.BIND_WALLPAPER">
+            <intent-filter>
+                <action android:name="android.service.wallpaper.WallpaperService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.wallpaper"
+                android:resource="@xml/raster_wallpaper" />
+        </service>
+        <provider
+            android:name=".SettingsAppearanceProvider"
+            android:authorities="btm.m.os4.systemuihook.settingsappearance"
+            android:exported="true"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>
