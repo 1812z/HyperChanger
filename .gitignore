@@ -1,5 +1,6 @@
 # Gradle files
 .gradle/
+.gradle-home/
 .kotlin/
 **/build/
 
@@ -39,6 +40,12 @@ Thumbs.db
 analysis/
 hyperos4-glass-blur-main/
 /.jadx.zip
+
+# Temporary reverse-engineering and device-test files
+/.tmp-*
+/device-*.txt
+/custom-my-device/
+/RELEASE_NOTES*.md
 
 # Device captures and extracted system packages kept only for local analysis
 /*.png

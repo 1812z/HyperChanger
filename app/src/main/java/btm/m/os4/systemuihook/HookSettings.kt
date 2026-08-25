@@ -7,6 +7,10 @@ import org.json.JSONObject
 
 const val REMOTE_PREFERENCE_GROUP = "hyper_system_ui_hook"
 
+const val LOCKSCREEN_MEDIA_NOTIFICATION_DO_NOT_HIDE = 0
+const val LOCKSCREEN_MEDIA_NOTIFICATION_ALWAYS_HIDE = 1
+const val LOCKSCREEN_MEDIA_NOTIFICATION_DYNAMIC = 2
+
 data class GlassTuning(
     val blurPercent: Int = 100,
     val opacity: Int = 100,
@@ -118,7 +122,10 @@ data class HookSettings(
     val rasterWallpaperCustomSensitivity: Float = 1f,
     val notificationFodPositionLimitRemoved: Boolean = false,
     val fingerprintHideMode: Int = 0,
-    val hideLockscreenChargingText: Boolean = false,
+    /** Bit mask: charging=1, do-not-disturb=2, notification count=4. */
+    val lockscreenBottomTextMask: Int = 0,
+    val lockscreenPinCircleBackgroundEnabled: Boolean = false,
+    val lockscreenPinCircleRowSpacing: Float = 0f,
     val lockscreenShortcutBackgroundMode: Int = 0,
     val lockscreenShortcutGlassRadius: Float = 48f,
     val lockscreenShortcutBackgroundRadiusEnabled: Boolean = false,
@@ -139,7 +146,8 @@ data class HookSettings(
     val shortcutSoftGlassBlurRadius: Int = 36,
     val shortcutSoftGlassLuminance: Float = 0.14f,
     val lockscreenMiniPlayerEnabled: Boolean = false,
-    val lockscreenMiniPlayerHideMediaNotification: Boolean = false,
+    val lockscreenMiniPlayerLyricsEnabled: Boolean = false,
+    val lockscreenMiniPlayerMediaNotificationMode: Int = LOCKSCREEN_MEDIA_NOTIFICATION_DO_NOT_HIDE,
     val lockscreenMiniPlayerBackgroundMode: Int = 0,
     val lockscreenMiniPlayerWidth: Float = 240f,
     // This is the same unit as the lockscreen shortcut circle radius. The rendered card is
@@ -163,6 +171,7 @@ data class HookSettings(
     val hideStatusBarNetworkActivity: Boolean = false,
     val themeMode: String = "system",
     val navigationStyle: String = "hyper_os",
+    val navigationLabelMode: String = "icon_and_text",
     val predictiveBackEnabled: Boolean = true,
     val predictiveBackProgress: Int = 90,
 )
@@ -171,6 +180,10 @@ class HookSettingsStore(context: Context) {
     private val local = context.getSharedPreferences(REMOTE_PREFERENCE_GROUP, Context.MODE_PRIVATE)
     var settings: HookSettings = local.toSettings()
         private set
+
+    fun reload() {
+        settings = local.toSettings()
+    }
 
     init {
         local.edit().removeLegacyIslandPreferences().removeLegacyShadePreferences().apply()
@@ -303,6 +316,10 @@ private const val KEY_NOTIFICATION_FOD_POSITION_LIMIT_REMOVED = "notification_fo
 private const val KEY_FINGERPRINT_HIDE_MODE = "fingerprint_hide_mode"
 private const val KEY_NOTIFICATIONS_IGNORE_FOD = "notifications_ignore_fod"
 private const val KEY_HIDE_LOCKSCREEN_CHARGING_TEXT = "hide_lockscreen_charging_text"
+private const val KEY_LOCKSCREEN_BOTTOM_TEXT_MASK = "lockscreen_bottom_text_mask"
+const val KEY_LOCKSCREEN_PIN_CIRCLE_BACKGROUND_ENABLED =
+    "lockscreen_pin_circle_background_enabled"
+const val KEY_LOCKSCREEN_PIN_CIRCLE_ROW_SPACING = "lockscreen_pin_circle_row_spacing"
 private const val KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_MODE = "lockscreen_shortcut_background_mode"
 private const val KEY_LOCKSCREEN_SHORTCUT_GLASS_ENABLED = "lockscreen_shortcut_glass_enabled"
 private const val KEY_LOCKSCREEN_SHORTCUT_GLASS_RADIUS = "lockscreen_shortcut_glass_radius"
@@ -326,8 +343,11 @@ private const val KEY_SHORTCUT_SOFT_GLASS_BACKDROP_BLUR_RADIUS = "shortcut_soft_
 private const val KEY_SHORTCUT_SOFT_GLASS_BLUR_RADIUS = "shortcut_soft_glass_blur_radius"
 private const val KEY_SHORTCUT_SOFT_GLASS_LUMINANCE = "shortcut_soft_glass_luminance"
 private const val KEY_LOCKSCREEN_MINI_PLAYER_ENABLED = "lockscreen_mini_player_enabled"
+private const val KEY_LOCKSCREEN_MINI_PLAYER_LYRICS_ENABLED = "lockscreen_mini_player_lyrics_enabled"
 private const val KEY_LOCKSCREEN_MINI_PLAYER_HIDE_MEDIA_NOTIFICATION =
     "lockscreen_mini_player_hide_media_notification"
+private const val KEY_LOCKSCREEN_MINI_PLAYER_MEDIA_NOTIFICATION_MODE =
+    "lockscreen_mini_player_media_notification_mode"
 private const val KEY_LOCKSCREEN_MINI_PLAYER_BACKGROUND_MODE = "lockscreen_mini_player_background_mode"
 private const val KEY_LOCKSCREEN_MINI_PLAYER_WIDTH = "lockscreen_mini_player_width"
 private const val KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT = "lockscreen_mini_player_height"
@@ -354,6 +374,7 @@ private const val KEY_HIDE_STATUS_BAR_CLOCK_TEXT = "hide_status_bar_clock_text"
 private const val KEY_HIDE_STATUS_BAR_NETWORK_ACTIVITY = "hide_status_bar_network_activity"
 private const val KEY_THEME_MODE = "theme_mode"
 private const val KEY_NAVIGATION_STYLE = "navigation_style"
+private const val KEY_NAVIGATION_LABEL_MODE = "navigation_label_mode"
 private const val KEY_PREDICTIVE_BACK_ENABLED = "predictive_back_enabled"
 private const val KEY_PREDICTIVE_BACK_PROGRESS = "predictive_back_progress"
 internal fun SharedPreferences.readMiniPlayerHeightRadius(): Float {
@@ -481,8 +502,21 @@ private fun SharedPreferences.toSettings(): HookSettings {
         // The legacy hide-icon choice was global; preserve it during upgrade.
         if (getInt(KEY_NOTIFICATION_FOD_MODE, 0) == 1) 2 else 0
     },
-    hideLockscreenChargingText = getBoolean(KEY_HIDE_LOCKSCREEN_CHARGING_TEXT, false) ||
-        getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, false),
+    lockscreenBottomTextMask = if (contains(KEY_LOCKSCREEN_BOTTOM_TEXT_MASK)) {
+        getInt(KEY_LOCKSCREEN_BOTTOM_TEXT_MASK, 0).coerceIn(0, 7)
+    } else {
+        // The old mini-player switch forcibly wrote this key. Do not carry that implicit state
+        // into the selectable mask; preserve the legacy toggle only when the mini-player is off.
+        if (getBoolean(KEY_HIDE_LOCKSCREEN_CHARGING_TEXT, false) &&
+            !getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, false)
+        ) 1 else 0
+    },
+    lockscreenPinCircleBackgroundEnabled = getBoolean(
+        KEY_LOCKSCREEN_PIN_CIRCLE_BACKGROUND_ENABLED,
+        false,
+    ),
+    lockscreenPinCircleRowSpacing = getFloat(KEY_LOCKSCREEN_PIN_CIRCLE_ROW_SPACING, 0f)
+        .coerceIn(-24f, 32f),
     lockscreenShortcutBackgroundMode = getInt(
         KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_MODE,
         if (getBoolean(KEY_LOCKSCREEN_SHORTCUT_GLASS_ENABLED, false)) 3 else 0,
@@ -513,10 +547,17 @@ private fun SharedPreferences.toSettings(): HookSettings {
     shortcutSoftGlassBlurRadius = getInt(KEY_SHORTCUT_SOFT_GLASS_BLUR_RADIUS, 10).coerceIn(0, 40),
     shortcutSoftGlassLuminance = getFloat(KEY_SHORTCUT_SOFT_GLASS_LUMINANCE, 0.14f).coerceIn(0f, 0.4f),
     lockscreenMiniPlayerEnabled = getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, false),
-    lockscreenMiniPlayerHideMediaNotification = getBoolean(
-        KEY_LOCKSCREEN_MINI_PLAYER_HIDE_MEDIA_NOTIFICATION,
-        false,
-    ),
+    lockscreenMiniPlayerLyricsEnabled = getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_LYRICS_ENABLED, false),
+    lockscreenMiniPlayerMediaNotificationMode = if (
+        contains(KEY_LOCKSCREEN_MINI_PLAYER_MEDIA_NOTIFICATION_MODE)
+    ) {
+        getInt(KEY_LOCKSCREEN_MINI_PLAYER_MEDIA_NOTIFICATION_MODE, LOCKSCREEN_MEDIA_NOTIFICATION_DO_NOT_HIDE)
+            .coerceIn(LOCKSCREEN_MEDIA_NOTIFICATION_DO_NOT_HIDE, LOCKSCREEN_MEDIA_NOTIFICATION_DYNAMIC)
+    } else if (getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_HIDE_MEDIA_NOTIFICATION, false)) {
+        LOCKSCREEN_MEDIA_NOTIFICATION_ALWAYS_HIDE
+    } else {
+        LOCKSCREEN_MEDIA_NOTIFICATION_DO_NOT_HIDE
+    },
     lockscreenMiniPlayerBackgroundMode = getInt(KEY_LOCKSCREEN_MINI_PLAYER_BACKGROUND_MODE, 0)
         .coerceIn(0, 3),
     lockscreenMiniPlayerWidth = getFloat(KEY_LOCKSCREEN_MINI_PLAYER_WIDTH, 240f)
@@ -553,6 +594,7 @@ private fun SharedPreferences.toSettings(): HookSettings {
     hideStatusBarNetworkActivity = getBoolean(KEY_HIDE_STATUS_BAR_NETWORK_ACTIVITY, false),
     themeMode = getString(KEY_THEME_MODE, "system").orEmpty().ifBlank { "system" },
     navigationStyle = getString(KEY_NAVIGATION_STYLE, "hyper_os").orEmpty().ifBlank { "hyper_os" },
+    navigationLabelMode = getString(KEY_NAVIGATION_LABEL_MODE, "icon_and_text").orEmpty().ifBlank { "icon_and_text" },
     predictiveBackEnabled = getBoolean(KEY_PREDICTIVE_BACK_ENABLED, true),
     predictiveBackProgress = getInt(KEY_PREDICTIVE_BACK_PROGRESS, 90).coerceIn(10, 100),
 )
@@ -770,10 +812,17 @@ private fun SharedPreferences.write(value: HookSettings) {
         .putFloat(KEY_RASTER_WALLPAPER_CUSTOM_SENSITIVITY, value.rasterWallpaperCustomSensitivity)
         .putBoolean(KEY_NOTIFICATION_FOD_POSITION_LIMIT_REMOVED, value.notificationFodPositionLimitRemoved)
         .putInt(KEY_FINGERPRINT_HIDE_MODE, value.fingerprintHideMode)
+        .putInt(KEY_LOCKSCREEN_BOTTOM_TEXT_MASK, value.lockscreenBottomTextMask.coerceIn(0, 7))
+        .putBoolean(KEY_HIDE_LOCKSCREEN_CHARGING_TEXT, value.lockscreenBottomTextMask and 1 != 0)
         .putBoolean(
-            KEY_HIDE_LOCKSCREEN_CHARGING_TEXT,
-            value.hideLockscreenChargingText || value.lockscreenMiniPlayerEnabled,
+            KEY_LOCKSCREEN_PIN_CIRCLE_BACKGROUND_ENABLED,
+            value.lockscreenPinCircleBackgroundEnabled,
         )
+        .putFloat(
+            KEY_LOCKSCREEN_PIN_CIRCLE_ROW_SPACING,
+            value.lockscreenPinCircleRowSpacing.coerceIn(-24f, 32f),
+        )
+        .remove("lockscreen_pin_background_blur_mode")
         .putInt(KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_MODE, value.lockscreenShortcutBackgroundMode)
         .putBoolean(KEY_LOCKSCREEN_SHORTCUT_GLASS_ENABLED, value.lockscreenShortcutBackgroundMode != 0)
         .putFloat(KEY_LOCKSCREEN_SHORTCUT_GLASS_RADIUS, value.lockscreenShortcutGlassRadius)
@@ -798,10 +847,15 @@ private fun SharedPreferences.write(value: HookSettings) {
         .putInt(KEY_SHORTCUT_SOFT_GLASS_BLUR_RADIUS, value.shortcutSoftGlassBlurRadius)
         .putFloat(KEY_SHORTCUT_SOFT_GLASS_LUMINANCE, value.shortcutSoftGlassLuminance)
         .putBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, value.lockscreenMiniPlayerEnabled)
-        .putBoolean(
-            KEY_LOCKSCREEN_MINI_PLAYER_HIDE_MEDIA_NOTIFICATION,
-            value.lockscreenMiniPlayerHideMediaNotification,
+        .putBoolean(KEY_LOCKSCREEN_MINI_PLAYER_LYRICS_ENABLED, value.lockscreenMiniPlayerLyricsEnabled)
+        .putInt(
+            KEY_LOCKSCREEN_MINI_PLAYER_MEDIA_NOTIFICATION_MODE,
+            value.lockscreenMiniPlayerMediaNotificationMode.coerceIn(
+                LOCKSCREEN_MEDIA_NOTIFICATION_DO_NOT_HIDE,
+                LOCKSCREEN_MEDIA_NOTIFICATION_DYNAMIC,
+            ),
         )
+        .remove(KEY_LOCKSCREEN_MINI_PLAYER_HIDE_MEDIA_NOTIFICATION)
         .putInt(KEY_LOCKSCREEN_MINI_PLAYER_BACKGROUND_MODE, value.lockscreenMiniPlayerBackgroundMode)
         .putFloat(KEY_LOCKSCREEN_MINI_PLAYER_WIDTH, value.lockscreenMiniPlayerWidth)
         .putFloat(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT, value.lockscreenMiniPlayerHeight)
@@ -827,6 +881,7 @@ private fun SharedPreferences.write(value: HookSettings) {
         .putBoolean(KEY_HIDE_STATUS_BAR_NETWORK_ACTIVITY, value.hideStatusBarNetworkActivity)
         .putString(KEY_THEME_MODE, value.themeMode)
         .putString(KEY_NAVIGATION_STYLE, value.navigationStyle)
+        .putString(KEY_NAVIGATION_LABEL_MODE, value.navigationLabelMode)
         .putBoolean(KEY_PREDICTIVE_BACK_ENABLED, value.predictiveBackEnabled)
         .putInt(KEY_PREDICTIVE_BACK_PROGRESS, value.predictiveBackProgress)
         .apply()

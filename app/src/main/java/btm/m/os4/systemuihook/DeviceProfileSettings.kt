@@ -50,6 +50,10 @@ class DeviceProfileStore(context: Context) {
     var settings: DeviceProfileSettings = local.toDeviceProfileSettings()
         private set
 
+    fun reload() {
+        settings = local.toDeviceProfileSettings()
+    }
+
     fun syncRemote(service: XposedService) {
         val remote = service.getRemotePreferences(DEVICE_PROFILE_PREFERENCES)
         settings = if (remote.contains(KEY_DEVICE_PROFILE_INITIALIZED)) remote.toDeviceProfileSettings() else settings

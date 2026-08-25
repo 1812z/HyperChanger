@@ -23,6 +23,10 @@ class CameraSettingsStore(context: Context) {
     var settings: CameraSettings = local.toCameraSettings()
         private set
 
+    fun reload() {
+        settings = local.toCameraSettings()
+    }
+
     fun syncRemote(service: XposedService) {
         val remote = service.getRemotePreferences(CAMERA_PREFERENCE_GROUP)
         settings = if (remote.contains(CAMERA_INITIALIZED)) remote.toCameraSettings() else settings.also { remote.writeCameraSettings(it) }

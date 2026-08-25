@@ -2,6 +2,7 @@ package btm.m.os4.systemuihook
 
 import android.content.SharedPreferences
 import android.app.KeyguardManager
+import android.content.res.ColorStateList
 import android.content.res.Resources
 import android.graphics.Canvas
 import android.graphics.Color
@@ -10,10 +11,12 @@ import android.graphics.Paint
 import android.graphics.Point
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
@@ -79,12 +82,15 @@ class HyperSystemUiModule : XposedModule() {
                         aospVolumePanelHooksInstalled = true
                     }
                     if (param.packageName == SYSTEM_UI && !focusIslandWhitelistSystemUiHooksInstalled) {
-                        installFocusIslandWhitelistSystemUiHooks(param.defaultClassLoader, preferences)
-                        focusIslandWhitelistSystemUiHooksInstalled = true
+                        focusIslandWhitelistSystemUiHooksInstalled =
+                            installFocusIslandWhitelistSystemUiHooks(param.defaultClassLoader, preferences)
                     }
-                    if (param.packageName == SYSTEM_UI_PLUGIN && !focusIslandWhitelistPluginHooksInstalled) {
-                        focusIslandWhitelistPluginHooksInstalled = true
-                        installFocusIslandWhitelistPluginHooks(param.defaultClassLoader, preferences)
+                    if (!focusIslandWhitelistPluginHooksInstalled) {
+                        // The plugin is commonly loaded into SystemUI's class loader and may not
+                        // receive a separate package callback.  Try the current loader first;
+                        // class-load discovery below will retry when the plugin appears later.
+                        focusIslandWhitelistPluginHooksInstalled =
+                            installFocusIslandWhitelistPluginHooks(param.defaultClassLoader, preferences)
                     }
                     if (param.packageName == SYSTEM_UI && !lockscreenNotificationHookInstalled) {
                         installLockscreenNotificationHook(param.defaultClassLoader, preferences)
@@ -108,11 +114,16 @@ class HyperSystemUiModule : XposedModule() {
                     }
                     if (param.packageName == SYSTEM_UI && !lockscreenChargingHookInstalled) {
                         installLockscreenChargingTextHook(param.defaultClassLoader, preferences)
+                        installLockscreenBottomTextViewHook(param.defaultClassLoader, preferences)
                         lockscreenChargingHookInstalled = true
                     }
                     if (param.packageName == SYSTEM_UI && !lockscreenShortcutGlassHookInstalled) {
                         installLockscreenShortcutGlassHook(param.defaultClassLoader, preferences)
                         lockscreenShortcutGlassHookInstalled = true
+                    }
+                    if (param.packageName == SYSTEM_UI && !lockscreenPinCircleBackgroundHookInstalled) {
+                        installLockscreenPinCircleBackgroundHook(param.defaultClassLoader, preferences)
+                        lockscreenPinCircleBackgroundHookInstalled = true
                     }
                     if (param.packageName == SYSTEM_UI && !shadeMaterialHooksInstalled) {
                         installShadeMaterialHooks(preferences)
@@ -169,7 +180,6 @@ class HyperSystemUiModule : XposedModule() {
         }
     }
 
-    /** Extend the target app's package-to-business map with the configured music packages. */
     private fun installMusicControlWhitelistHook(
         classLoader: ClassLoader,
         preferences: SharedPreferences,
@@ -294,15 +304,15 @@ class HyperSystemUiModule : XposedModule() {
 
     /** Keep the stock bionic/soft-glass pipeline active when a global theme is applied. */
     private fun scheduleSoftGlassThemeActivation(preferences: SharedPreferences) {
-        if (themeActivationScheduled ||
-            !preferences.getBoolean(KEY_KEEP_SOFT_GLASS_AFTER_GLOBAL_THEME, false)
-        ) return
+        if (themeActivationScheduled) return
         themeActivationScheduled = true
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!preferences.getBoolean(KEY_KEEP_SOFT_GLASS_AFTER_GLOBAL_THEME, false)) return@postDelayed
-            themeOverrideReady = true
+        // The control-center plugin now creates its default-theme StateFlow while it is
+        // loading. Delaying this flag lets a global-theme "false" be cached permanently
+        // until the next configuration change, so it must be available before the plugin.
+        themeOverrideReady = true
+        if (preferences.getBoolean(KEY_KEEP_SOFT_GLASS_AFTER_GLOBAL_THEME, false)) {
             log(Log.INFO, TAG, "Soft-glass theme override enabled after startup")
-        }, SOFT_GLASS_THEME_STARTUP_DELAY_MS)
+        }
     }
 
     private fun installSoftGlassThemeSystemUiHook(
@@ -363,6 +373,10 @@ class HyperSystemUiModule : XposedModule() {
                         result
                     }
             }
+            installSoftGlassThemePluginMaterialGuards(classLoader, preferences)
+            if (preferences.getBoolean(KEY_KEEP_SOFT_GLASS_AFTER_GLOBAL_THEME, false) && themeOverrideReady) {
+                forceThemeUtilsFlags(themeUtils)
+            }
             log(Log.INFO, TAG, "Installed soft-glass global-theme hook for plugin")
         }.onFailure { error ->
             log(Log.WARN, TAG, "Could not install soft-glass global-theme hook for plugin", error)
@@ -418,6 +432,12 @@ class HyperSystemUiModule : XposedModule() {
                         result
                     }
             }
+            themeUtils.classLoader?.let { pluginClassLoader ->
+                installSoftGlassThemePluginMaterialGuards(pluginClassLoader, preferences)
+            }
+            if (preferences.getBoolean(KEY_KEEP_SOFT_GLASS_AFTER_GLOBAL_THEME, false) && themeOverrideReady) {
+                forceThemeUtilsFlags(themeUtils)
+            }
             dynamicPluginThemeHookInstalled = true
             log(Log.INFO, TAG, "Installed soft-glass global-theme hook for dynamically loaded plugin")
         }.onFailure { error ->
@@ -460,6 +480,55 @@ class HyperSystemUiModule : XposedModule() {
         runCatching {
             themeClass.getDeclaredField("defaultPluginTheme").apply { isAccessible = true }.setBoolean(null, true)
             themeClass.getDeclaredField("defaultSysUiTheme").apply { isAccessible = true }.setBoolean(null, true)
+        }
+    }
+
+    /**
+     * Newer control-center builds cache the result of ThemeUtils in their own StateFlow.
+     * Guard the cache's initialization path and the material capability predicate directly,
+     * so a global theme cannot disable glass after ThemeUtils has already been updated.
+     */
+    private fun installSoftGlassThemePluginMaterialGuards(
+        classLoader: ClassLoader,
+        preferences: SharedPreferences,
+    ) {
+        if (softGlassThemePluginMaterialHooksInstalled) return
+        runCatching {
+            val blurCompat = classLoader.loadClass(MI_BLUR_COMPAT_CLASS)
+            hook(blurCompat.getMethod(
+                "getBackgroundMaterialOpenedInDefaultTheme",
+                android.content.Context::class.java,
+            ))
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("soft-glass-theme:plugin-material-enabled")
+                .intercept { chain ->
+                    if (preferences.getBoolean(KEY_KEEP_SOFT_GLASS_AFTER_GLOBAL_THEME, false) &&
+                        themeOverrideReady
+                    ) {
+                        true
+                    } else {
+                        chain.proceed()
+                    }
+                }
+
+            val defaultThemeController = classLoader.loadClass(MIUI_DEFAULT_THEME_CONTROLLER_IMPL_CLASS)
+            hook(defaultThemeController.getMethod("isDefaultTheme"))
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("soft-glass-theme:plugin-default-theme-controller")
+                .intercept { chain ->
+                    if (preferences.getBoolean(KEY_KEEP_SOFT_GLASS_AFTER_GLOBAL_THEME, false) &&
+                        themeOverrideReady
+                    ) {
+                        true
+                    } else {
+                        chain.proceed()
+                    }
+                }
+
+            softGlassThemePluginMaterialHooksInstalled = true
+            log(Log.INFO, TAG, "Installed soft-glass plugin material-state guards")
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Could not install soft-glass plugin material-state guards", error)
         }
     }
 
@@ -940,6 +1009,7 @@ class HyperSystemUiModule : XposedModule() {
                         editorInfo.packageName = originalPackage
                     }
                 }
+
             log(Log.INFO, TAG, "Installed Super XiaoAi global search-appearance hooks")
         }.onFailure { error ->
             log(Log.ERROR, TAG, "Could not install Super XiaoAi global search-appearance hooks", error)
@@ -954,8 +1024,8 @@ class HyperSystemUiModule : XposedModule() {
         installDynamicIslandLayoutHooks(classLoader, preferences)
         installDynamicIslandSelfBlurHook(classLoader, preferences)
         if (!focusIslandWhitelistPluginHooksInstalled) {
-            focusIslandWhitelistPluginHooksInstalled = true
-            installFocusIslandWhitelistPluginHooks(classLoader, preferences)
+            focusIslandWhitelistPluginHooksInstalled =
+                installFocusIslandWhitelistPluginHooks(classLoader, preferences)
         }
         log(Log.INFO, TAG, "Installed dynamic-island hooks")
     }
@@ -963,8 +1033,8 @@ class HyperSystemUiModule : XposedModule() {
     private fun installFocusIslandWhitelistPluginHooks(
         classLoader: ClassLoader,
         preferences: SharedPreferences,
-    ) {
-        runCatching {
+    ): Boolean {
+        return runCatching {
             val settingsClass = classLoader.loadClass(PLUGIN_NOTIFICATION_SETTINGS_MANAGER_CLASS)
             listOf("canCustomFocus", "mediaIslandSupportMiniWindow").forEach { name ->
                 hook(settingsClass.getMethod(name, String::class.java))
@@ -1004,6 +1074,55 @@ class HyperSystemUiModule : XposedModule() {
                     }
                 }
 
+            // Custom focus notifications perform a second, independent signature/XMS
+            // authorization in FocusNotificationController.fetchAuthResult.  Bypass only
+            // that authorization when the user enabled the whitelist-limit removal.
+            runCatching {
+                val controllerClass = classLoader.loadClass(FOCUS_NOTIFICATION_CONTROLLER_CLASS)
+                val authMethod = controllerClass.declaredMethods.firstOrNull {
+                    it.name == "fetchAuthResult" && it.parameterCount == 5
+                }
+                if (authMethod != null) {
+                    hook(authMethod)
+                        .setExceptionMode(ExceptionMode.PROTECTIVE)
+                        .setId("focus-island-whitelist-plugin:auth-result")
+                        .intercept { chain ->
+                            if (!preferences.getBoolean(KEY_REMOVE_FOCUS_AND_ISLAND_WHITELIST_LIMIT, false)) {
+                                return@intercept chain.proceed()
+                            }
+                            val sbn = chain.getArg(1)
+                            val key = runCatching {
+                                sbn?.javaClass?.getMethod("getKey")?.invoke(sbn) as? String
+                            }.getOrNull()
+                            val packageName = chain.getArg(2) as? String
+                            val callback = chain.getArg(4)
+                            val success = runCatching {
+                                if (key == null || packageName == null || callback == null) {
+                                    false
+                                } else {
+                                    val successMethod = callback.javaClass.methods.firstOrNull {
+                                        it.name == "onAuthSuccess" && it.parameterCount == 2
+                                    }
+                                    if (successMethod == null) {
+                                        false
+                                    } else {
+                                        successMethod.invoke(callback, key, packageName)
+                                        true
+                                    }
+                                }
+                            }.getOrDefault(false)
+                            if (!success) {
+                                chain.proceed()
+                            } else {
+                                log(Log.INFO, TAG, "Allowed focus authorization for $packageName")
+                                null
+                            }
+                        }
+                }
+            }.onFailure { error ->
+                log(Log.WARN, TAG, "Could not install FocusNotificationController auth hook", error)
+            }
+
             val coordinatorClass = classLoader.loadClass(DYNAMIC_ISLAND_EVENT_COORDINATOR_CLASS)
             hook(coordinatorClass.getMethod("mediaIslandSupportMiniWindow", String::class.java))
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
@@ -1030,9 +1149,10 @@ class HyperSystemUiModule : XposedModule() {
                     chain.proceed()
                 }
             log(Log.INFO, TAG, "Installed focus-notification and island whitelist hooks for plugin")
+            true
         }.onFailure { error ->
             log(Log.ERROR, TAG, "Could not install focus-notification and island whitelist plugin hooks", error)
-        }
+        }.getOrDefault(false)
     }
 
     private fun allowIslandStateCallbackPackage(
@@ -1062,8 +1182,8 @@ class HyperSystemUiModule : XposedModule() {
     private fun installFocusIslandWhitelistSystemUiHooks(
         classLoader: ClassLoader,
         preferences: SharedPreferences,
-    ) {
-        runCatching {
+    ): Boolean {
+        return runCatching {
             val settingsClass = classLoader.loadClass(SYSTEM_UI_NOTIFICATION_SETTINGS_MANAGER_CLASS)
             listOf(
                 "canShowFocusState",
@@ -1081,10 +1201,43 @@ class HyperSystemUiModule : XposedModule() {
                         }
                     }
             }
+
+            // The public provider is the entry point used by FocusPlugin for the
+            // cross-process canShowFocus query.  It reads app_notification directly,
+            // so the settings-manager hooks above cannot affect its result.
+            runCatching {
+                val providerClass = classLoader.loadClass(NOTIFICATION_PROVIDER_PUBLIC_CLASS)
+                hook(
+                    providerClass.getMethod(
+                        "call",
+                        String::class.java,
+                        String::class.java,
+                        android.os.Bundle::class.java,
+                    )
+                )
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("focus-island-whitelist-systemui:provider-call")
+                    .intercept { chain ->
+                        val result = chain.proceed() as? android.os.Bundle
+                        if (!preferences.getBoolean(KEY_REMOVE_FOCUS_AND_ISLAND_WHITELIST_LIMIT, false) ||
+                            chain.getArg(0) != "canShowFocus"
+                        ) {
+                            result
+                        } else {
+                            (result ?: android.os.Bundle()).apply {
+                                putBoolean("canShowFocus", true)
+                            }
+                        }
+                    }
+                log(Log.INFO, TAG, "Installed focus permission hook for NotificationProviderPublic.call")
+            }.onFailure { error ->
+                log(Log.WARN, TAG, "Could not install NotificationProviderPublic.call focus hook", error)
+            }
             log(Log.INFO, TAG, "Installed focus-notification whitelist hooks for SystemUI")
+            true
         }.onFailure { error ->
             log(Log.ERROR, TAG, "Could not install focus-notification whitelist SystemUI hooks", error)
-        }
+        }.getOrDefault(false)
     }
 
     private fun installDynamicIslandClassDiscovery(preferences: SharedPreferences) {
@@ -1106,15 +1259,16 @@ class HyperSystemUiModule : XposedModule() {
                         }
                     }
                     if (loadedClass.name == PLUGIN_NOTIFICATION_SETTINGS_MANAGER_CLASS &&
-                        !focusIslandWhitelistPluginHooksInstalled
+                        !focusIslandWhitelistPluginHooksInstalled &&
+                        focusIslandWhitelistPluginInstalling.get() != true
                     ) {
-                        focusIslandWhitelistPluginHooksInstalled = true
                         loadedClass.classLoader?.let { pluginClassLoader ->
-                            runCatching {
-                                installFocusIslandWhitelistPluginHooks(pluginClassLoader, preferences)
-                            }.onFailure { error ->
-                                focusIslandWhitelistPluginHooksInstalled = false
-                                log(Log.ERROR, TAG, "Could not initialize focus/island whitelist hooks from plugin loader", error)
+                            focusIslandWhitelistPluginInstalling.set(true)
+                            try {
+                                focusIslandWhitelistPluginHooksInstalled =
+                                    installFocusIslandWhitelistPluginHooks(pluginClassLoader, preferences)
+                            } finally {
+                                focusIslandWhitelistPluginInstalling.remove()
                             }
                         }
                     }
@@ -1406,7 +1560,9 @@ class HyperSystemUiModule : XposedModule() {
                 .setId("notification-row-glass-material-type")
                 .intercept { chain ->
                     val view = chain.thisObject as? View
-                    if (view != null && isNotificationRowBackground(view) && notificationMaterialEnabled(preferences)) {
+                    if (view != null && isNotificationRowBackground(view) &&
+                        !isMediaNotificationView(view) && notificationMaterialEnabled(preferences)
+                    ) {
                         chain.proceedWith(chain.thisObject, arrayOf(1))
                     } else {
                         chain.proceed()
@@ -1425,7 +1581,9 @@ class HyperSystemUiModule : XposedModule() {
                     .setId("notification-row-glass-outline")
                     .intercept { chain ->
                         val view = chain.thisObject as? View
-                        if (view != null && isNotificationRowBackground(view) && notificationMaterialEnabled(preferences)) {
+                        if (view != null && isNotificationRowBackground(view) &&
+                            !isMediaNotificationView(view) && notificationMaterialEnabled(preferences)
+                        ) {
                             val flags = chain.getArg(0) as Int
                             val mask = chain.getArg(1) as Int
                             chain.proceedWith(chain.thisObject, arrayOf(flags or 8192, mask or 8192))
@@ -1451,7 +1609,9 @@ class HyperSystemUiModule : XposedModule() {
                     .setId("notification-row-glass-sdf-size")
                     .intercept { chain ->
                         val view = chain.thisObject as? View
-                        if (view != null && isNotificationRowBackground(view) && notificationMaterialEnabled(preferences)) {
+                        if (view != null && isNotificationRowBackground(view) &&
+                            !isMediaNotificationView(view) && notificationMaterialEnabled(preferences)
+                        ) {
                             val visibleHeight = notificationVisibleHeight(view)
                             val wantedHeight = chain.getArg(1) as Float
                             if (visibleHeight > 0 && wantedHeight > visibleHeight) {
@@ -1566,7 +1726,8 @@ class HyperSystemUiModule : XposedModule() {
      * not from the anonymous child view receiving the setter call.
      */
     private fun materialTuningFor(view: View, preferences: SharedPreferences): GlassTuning? = when {
-        isNotificationCenterCall() && isNotificationRowBackground(view) ->
+        isNotificationCenterCall() && isNotificationRowBackground(view) &&
+            !isMediaNotificationView(view) ->
             notificationTuningFor(view, preferences)
         isControlCenterCall() -> controlCenterTuningFor(view, preferences)
         else -> null
@@ -1641,6 +1802,7 @@ class HyperSystemUiModule : XposedModule() {
         source: String,
     ) {
         if (!isNotificationRowBackground(view) ||
+            isMediaNotificationView(view) ||
             !notificationMaterialEnabled(preferences) ||
             notificationGlassApplying.get() == true
         ) {
@@ -1699,6 +1861,21 @@ class HyperSystemUiModule : XposedModule() {
         if (!view.javaClass.name.contains("NotificationBackgroundView")) return false
         val idName = runCatching { view.resources.getResourceEntryName(view.id) }.getOrNull()
         return idName == null || idName == "backgroundNormal" || idName == "backgroundDimmed"
+    }
+
+    private fun isMediaNotificationView(view: View): Boolean {
+        fun matches(candidate: View): Boolean {
+            val name = candidate.javaClass.name.lowercase(java.util.Locale.ROOT)
+            return name.contains("miuimedia") ||
+                name.contains("mediaheader") ||
+                name.contains("mediarow") ||
+                name.contains("mediacontrol") ||
+                name.contains("mediaholder")
+        }
+        if (matches(view)) return true
+        return generateSequence(view.parent) { it.parent }
+            .filterIsInstance<View>()
+            .any(::matches)
     }
 
     private fun notificationVisibleHeight(view: View): Int = runCatching {
@@ -1816,6 +1993,10 @@ class HyperSystemUiModule : XposedModule() {
         controlCenter: Boolean,
         notification: Boolean,
     ): MaterialOverride? = when {
+        // Media controls have their own progress/background renderer. Applying the generic
+        // notification recipe to those child views can make the seek bar disappear while the
+        // asynchronous glass layer is rebuilding.
+        view != null && isMediaNotificationView(view) -> null
         view != null && isNotificationRowBackground(view) ->
             preferences.getMaterialOverride(KEY_NOTIFICATION_ELEMENTS_MATERIAL)
         controlCenter -> preferences.getMaterialOverride(KEY_CONTROL_CENTER_ELEMENTS_MATERIAL)
@@ -1982,25 +2163,25 @@ class HyperSystemUiModule : XposedModule() {
                     .intercept { chain ->
                         val result = chain.proceed()
                         val root = chain.getArg(0) as? View ?: return@intercept result
-                        if (shortcutBackgroundMode(preferences) != SHORTCUT_BACKGROUND_NONE ||
-                            shortcutIconColorMode(preferences) != SHORTCUT_ICON_COLOR_AUTO
-                        ) {
-                            runCatching {
-                                installShortcutGlassBackgrounds(root, preferences, classLoader)
-                            }.onFailure { error ->
-                                log(Log.ERROR, TAG, "Could not apply lockscreen shortcut glass", error)
-                            }
+                        runCatching {
+                            // Keep the shortcut containers fully laid out even when the user
+                            // selects "不显示". In that mode the layer is transparent, so this
+                            // preserves geometry without adding a visible shortcut background.
+                            installShortcutGlassBackgrounds(root, preferences, classLoader)
+                        }.onFailure { error ->
+                            log(Log.ERROR, TAG, "Could not apply lockscreen shortcut glass", error)
                         }
                         runCatching {
                             applyLockscreenShortcutGeometry(root, preferences)
                         }.onFailure { error ->
                             log(Log.ERROR, TAG, "Could not apply lockscreen shortcut geometry", error)
                         }
-                        runCatching {
-                            installLockscreenMiniPlayer(root, preferences, classLoader)
-                        }.onFailure { error ->
-                            log(Log.ERROR, TAG, "Could not apply lockscreen mini player", error)
-                        }
+                        scheduleLockscreenMiniPlayerInstallation(
+                            root = root,
+                            shortcutController = chain.thisObject,
+                            preferences = preferences,
+                            classLoader = classLoader,
+                        )
                         result
                     }
             }
@@ -2010,42 +2191,250 @@ class HyperSystemUiModule : XposedModule() {
         }
     }
 
+    private fun installLockscreenPinCircleBackgroundHook(
+        classLoader: ClassLoader,
+        preferences: SharedPreferences,
+    ) {
+        runCatching {
+            val pinViewClass = classLoader.loadClass(KEYGUARD_PIN_VIEW_CLASS)
+            val onFinishInflate = pinViewClass.getDeclaredMethod("onFinishInflate")
+            hook(onFinishInflate)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("lockscreen-pin-circle-background")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    if (preferences.getBoolean(KEY_LOCKSCREEN_PIN_CIRCLE_BACKGROUND_ENABLED, false)) {
+                        val pinView = chain.thisObject as? View
+                        pinView?.post {
+                            installLockscreenPinCircleBackgrounds(pinView, classLoader, preferences)
+                        }
+                    }
+                    result
+                }
+            log(Log.INFO, TAG, "Installed lockscreen PIN circle-background hook")
+        }.onFailure { error ->
+            log(Log.ERROR, TAG, "Could not install lockscreen PIN circle-background hook", error)
+        }
+    }
+
+    private fun installLockscreenPinCircleBackgrounds(
+        root: View,
+        classLoader: ClassLoader,
+        preferences: SharedPreferences,
+    ) {
+        val keys = ArrayList<View>(10)
+        fun visit(view: View) {
+            if (view.idName() in LOCKSCREEN_PIN_KEY_IDS) keys += view
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) visit(view.getChildAt(index))
+            }
+        }
+        visit(root)
+        keys.forEach { key ->
+            key.post {
+                val keyGroup = key as? ViewGroup ?: return@post
+                val diameter = minOf(key.width, key.height)
+                if (diameter <= 0) return@post
+                for (index in keyGroup.childCount - 1 downTo 0) {
+                    if (keyGroup.getChildAt(index).tag == LOCKSCREEN_PIN_CIRCLE_TAG) {
+                        keyGroup.removeViewAt(index)
+                    }
+                }
+                val material = ImageView(key.context).apply {
+                    tag = LOCKSCREEN_PIN_CIRCLE_TAG
+                    isClickable = false
+                    isFocusable = false
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    // The backdrop compositor requires drawable content before it registers a view.
+                    setImageDrawable(GradientDrawable().apply { setColor(Color.argb(1, 255, 255, 255)) })
+                    foreground = RippleDrawable(
+                        ColorStateList.valueOf(LOCKSCREEN_PIN_CIRCLE_RIPPLE_COLOR),
+                        null,
+                        GradientDrawable().apply {
+                            shape = GradientDrawable.OVAL
+                            setColor(Color.WHITE)
+                        },
+                    )
+                    clipToOutline = true
+                    outlineProvider = object : ViewOutlineProvider() {
+                        override fun getOutline(target: View, outline: Outline) {
+                            outline.setOval(0, 0, target.width, target.height)
+                        }
+                    }
+                }
+                keyGroup.addView(material, 0, ViewGroup.LayoutParams(diameter, diameter))
+                // NumPadKey's stock background owns the expanding press animation. Remove it so
+                // the material layer's circular foreground ripple is the only visual feedback.
+                key.background = null
+                fun placeMaterial() {
+                    val size = minOf(key.width, key.height)
+                    if (size <= 0) return
+                    material.layoutParams = material.layoutParams.apply {
+                        width = size
+                        height = size
+                    }
+                    val left = (key.width - size) / 2
+                    val top = (key.height - size) / 2
+                    material.layout(left, top, left + size, top + size)
+                    material.invalidateOutline()
+                }
+                key.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> placeMaterial() }
+                placeMaterial()
+                key.setOnTouchListener { _, event ->
+                    material.isPressed = event.actionMasked == MotionEvent.ACTION_DOWN ||
+                        event.actionMasked == MotionEvent.ACTION_MOVE
+                    false
+                }
+                configureLockscreenPinLabels(keyGroup)
+                runCatching {
+                    applyLegacyBackdropMaterial(
+                        view = material,
+                        opacity = DEFAULT_ADVANCED_MATERIAL_OPACITY,
+                        blurRadius = DEFAULT_ADVANCED_MATERIAL_BLUR_RADIUS,
+                        color = DEFAULT_ADVANCED_MATERIAL_COLOR,
+                        showHighlight = true,
+                    )
+                    applySystemGlassMaterial(
+                        view = material,
+                        classLoader = classLoader,
+                        blurRadius = DEFAULT_SOFT_GLASS_BLUR_RADIUS,
+                        luminance = DEFAULT_SOFT_GLASS_LUMINANCE,
+                    )
+                }.onFailure { error ->
+                    log(Log.ERROR, TAG, "Could not initialize PIN key material", error)
+                }
+            }
+        }
+        applyLockscreenPinRowSpacing(root, preferences)
+        log(
+            Log.INFO,
+            TAG,
+            "Applied PIN material to ${keys.size} key(s), rowSpacing=" +
+                "${preferences.getFloat(KEY_LOCKSCREEN_PIN_CIRCLE_ROW_SPACING, 0f)}dp",
+        )
+    }
+
+    private fun configureLockscreenPinLabels(key: ViewGroup) {
+        fun visit(view: View) {
+            if (view is TextView && view.idName() == "klondike_text") {
+                view.ellipsize = null
+                view.isSingleLine = false
+                view.maxLines = 1
+                view.setHorizontallyScrolling(false)
+                view.textScaleX = 0.86f
+                view.includeFontPadding = false
+            }
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) visit(view.getChildAt(index))
+            }
+        }
+        visit(key)
+    }
+
+    private fun applyLockscreenPinRowSpacing(root: View, preferences: SharedPreferences) {
+        val rows = LinkedHashMap<String, View>(4)
+        fun visit(view: View) {
+            view.idName()?.takeIf { it in LOCKSCREEN_PIN_ROW_IDS }?.let { rows[it] = view }
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) visit(view.getChildAt(index))
+            }
+        }
+        visit(root)
+        val spacingPx = preferences.getFloat(KEY_LOCKSCREEN_PIN_CIRCLE_ROW_SPACING, 0f)
+            .coerceIn(-24f, 32f) * root.resources.displayMetrics.density
+        LOCKSCREEN_PIN_ROW_IDS.forEachIndexed { index, id ->
+            // Keep row4 fixed so positive spacing expands upward, away from the fingerprint area.
+            rows[id]?.translationY = -spacingPx * (LOCKSCREEN_PIN_ROW_IDS.lastIndex - index)
+        }
+    }
+
     private fun installLockscreenMiniPlayer(
         root: View,
+        shortcutController: Any?,
         preferences: SharedPreferences,
         classLoader: ClassLoader,
     ) {
         val shortcuts = findShortcutContainers(root)
-        if (shortcuts.size < 2) return
-        val left = shortcuts.firstOrNull { it.idName() == "shortcut_view_left_layout" } ?: shortcuts[0]
-        val right = shortcuts.firstOrNull { it.idName() == "shortcut_view_right_layout" } ?: shortcuts[1]
+        val legacyShortcuts = if (shortcuts.size >= 2) {
+            val left = shortcuts.firstOrNull { it.idName() == "shortcut_view_left_layout" } ?: shortcuts[0]
+            val right = shortcuts.firstOrNull { it.idName() == "shortcut_view_right_layout" } ?: shortcuts[1]
+            left to right
+        } else {
+            null
+        }
+        // The plugin may recreate its shortcut content after addShortcutViews returns. Ask the
+        // controller for the actual views rather than relying only on the plugin's layout IDs.
+        val controllerShortcuts = resolveLockscreenShortcutViews(shortcutController)
+        val (left, right) = controllerShortcuts ?: legacyShortcuts ?: return
+        if (left === right) return
         val parent = commonShortcutParent(left, right) ?: return
-        val old = parent.getTag(LOCKSCREEN_MINI_PLAYER_TAG) as? LockscreenMiniPlayerController
+        val old = synchronized(lockscreenMiniPlayerControllers) {
+            lockscreenMiniPlayerControllers[parent]
+        }
         if (!preferences.getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, false)) {
             old?.destroy()
-            parent.setTag(LOCKSCREEN_MINI_PLAYER_TAG, null)
+            lockscreenMiniPlayerControllers.remove(parent)
             return
         }
         if (old == null) {
-            parent.setTag(
-                LOCKSCREEN_MINI_PLAYER_TAG,
-                LockscreenMiniPlayerController(
-                    host = parent,
-                    leftShortcut = left,
-                    rightShortcut = right,
-                    enabled = { preferences.getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, false) },
-                    appearance = { miniPlayerAppearance(preferences) },
-                    applyPlatformMaterial = { view, appearance ->
-                        runCatching {
-                            applyMiniPlayerMaterial(view, appearance, classLoader)
-                        }.onFailure { error ->
-                            log(Log.ERROR, TAG, "Could not initialize mini player material", error)
-                        }
-                    },
-                ),
+            val controller = LockscreenMiniPlayerController(
+                host = parent,
+                leftShortcut = left,
+                rightShortcut = right,
+                enabled = { preferences.getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, false) },
+                lyricsEnabled = {
+                    preferences.getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_LYRICS_ENABLED, false)
+                },
+                mediaNotificationMode = { lockscreenMediaNotificationMode(preferences) },
+                appearance = { miniPlayerAppearance(preferences) },
+                applyPlatformMaterial = { view, appearance ->
+                    runCatching {
+                        applyMiniPlayerMaterial(view, appearance, classLoader)
+                    }.onFailure { error ->
+                        log(Log.ERROR, TAG, "Could not initialize mini player material", error)
+                    }
+                },
             )
+            synchronized(lockscreenMiniPlayerControllers) {
+                lockscreenMiniPlayerControllers[parent] = controller
+            }
         }
     }
+
+    private fun scheduleLockscreenMiniPlayerInstallation(
+        root: View,
+        shortcutController: Any?,
+        preferences: SharedPreferences,
+        classLoader: ClassLoader,
+    ) {
+        fun install() {
+            runCatching {
+                installLockscreenMiniPlayer(root, shortcutController, preferences, classLoader)
+            }.onFailure { error ->
+                log(Log.ERROR, TAG, "Could not apply lockscreen mini player", error)
+            }
+        }
+        install()
+        // 18.2.2.2.0 can finish rebuilding its shortcut content after the controller method
+        // returns. Retry after attachment and after the next layout pass without retaining a
+        // hierarchy listener for the lifetime of SystemUI.
+        root.post(::install)
+        root.postDelayed(::install, LOCKSCREEN_SHORTCUT_RETRY_DELAY_MS)
+    }
+
+    private fun resolveLockscreenShortcutViews(shortcutController: Any?): Pair<View, View>? = runCatching {
+        val controller = shortcutController ?: return@runCatching null
+        val action = controller.javaClass.methods.firstOrNull {
+            it.name == "onSystemUIAction\$1" && it.parameterCount == 2
+        } ?: return@runCatching null
+        fun shortcut(isLeft: Boolean): View? {
+            val bundle = android.os.Bundle().apply { putBoolean("isLeftShortcutView", isLeft) }
+            return action.invoke(controller, bundle, "getShortcutView") as? View
+        }
+        val left = shortcut(true) ?: return@runCatching null
+        val right = shortcut(false) ?: return@runCatching null
+        left to right
+    }.getOrNull()
 
     private fun miniPlayerAppearance(preferences: SharedPreferences): MiniPlayerAppearance {
         val width = preferences.getFloat(KEY_LOCKSCREEN_MINI_PLAYER_WIDTH, 240f).coerceIn(160f, 360f)
@@ -2189,51 +2578,58 @@ class HyperSystemUiModule : XposedModule() {
         ).coerceIn(0f, 60f)
         val diameter = (radius * root.resources.displayMetrics.density).toInt().coerceAtLeast(1) * 2
         findShortcutContainers(root).forEach { shortcutContainer ->
-            if (backgroundMode != SHORTCUT_BACKGROUND_NONE) {
-                shortcutContainer.clipChildren = false
-                shortcutContainer.clipToPadding = false
-                for (index in shortcutContainer.childCount - 1 downTo 0) {
-                    val child = shortcutContainer.getChildAt(index)
-                    if (child.tag == SHORTCUT_GLASS_TAG) shortcutContainer.removeViewAt(index)
-                }
-                val glassBackground = ImageView(shortcutContainer.context).apply {
-                    tag = SHORTCUT_GLASS_TAG
-                    isClickable = false
-                    isFocusable = false
-                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                    if (backgroundMode == SHORTCUT_BACKGROUND_PURE_COLOR) {
+            shortcutContainer.clipChildren = false
+            shortcutContainer.clipToPadding = false
+            for (index in shortcutContainer.childCount - 1 downTo 0) {
+                val child = shortcutContainer.getChildAt(index)
+                if (child.tag == SHORTCUT_GLASS_TAG) shortcutContainer.removeViewAt(index)
+            }
+            val glassBackground = ImageView(shortcutContainer.context).apply {
+                tag = SHORTCUT_GLASS_TAG
+                isClickable = false
+                isFocusable = false
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                when (backgroundMode) {
+                    SHORTCUT_BACKGROUND_NONE -> {
+                        // Keep a real drawable/layout layer while making the "不显示" mode
+                        // completely transparent.
+                        setImageDrawable(GradientDrawable().apply { setColor(Color.TRANSPARENT) })
+                    }
+                    SHORTCUT_BACKGROUND_PURE_COLOR -> {
                         setBackgroundColor(preferences.getInt(KEY_SHORTCUT_PURE_COLOR, SHORTCUT_PURE_COLOR))
-                    } else {
+                    }
+                    else -> {
                         // Miui's backdrop renderer only registers views that have drawable content.
                         // A one-alpha source keeps this layer visually transparent until the system
                         // material pipeline has rendered its backdrop into it.
                         setImageDrawable(GradientDrawable().apply { setColor(Color.argb(1, 255, 255, 255)) })
                     }
-                    clipToOutline = true
-                    outlineProvider = object : ViewOutlineProvider() {
-                        override fun getOutline(target: View, outline: Outline) {
-                            if (backgroundRadiusEnabled) {
-                                val radiusPx = backgroundRadius * target.resources.displayMetrics.density
-                                outline.setRoundRect(
-                                    0,
-                                    0,
-                                    target.width,
-                                    target.height,
-                                    radiusPx.coerceAtMost(minOf(target.width, target.height) / 2f),
-                                )
-                            } else {
-                                outline.setOval(0, 0, target.width, target.height)
-                            }
+                }
+                clipToOutline = true
+                outlineProvider = object : ViewOutlineProvider() {
+                    override fun getOutline(target: View, outline: Outline) {
+                        if (backgroundRadiusEnabled) {
+                            val radiusPx = backgroundRadius * target.resources.displayMetrics.density
+                            outline.setRoundRect(
+                                0,
+                                0,
+                                target.width,
+                                target.height,
+                                radiusPx.coerceAtMost(minOf(target.width, target.height) / 2f),
+                            )
+                        } else {
+                            outline.setOval(0, 0, target.width, target.height)
                         }
                     }
                 }
-                shortcutContainer.addView(
-                    glassBackground,
-                    0,
-                    FrameLayout.LayoutParams(diameter, diameter, Gravity.CENTER),
-                )
-                glassBackground.invalidateOutline()
-                if (backgroundMode == SHORTCUT_BACKGROUND_ADVANCED_MATERIAL) {
+            }
+            shortcutContainer.addView(
+                glassBackground,
+                0,
+                FrameLayout.LayoutParams(diameter, diameter, Gravity.CENTER),
+            )
+            glassBackground.invalidateOutline()
+            if (backgroundMode == SHORTCUT_BACKGROUND_ADVANCED_MATERIAL) {
                     runCatching {
                         applyLegacyBackdropMaterial(
                             view = glassBackground,
@@ -2285,7 +2681,6 @@ class HyperSystemUiModule : XposedModule() {
                         )
                     }.onFailure { error -> log(Log.ERROR, TAG, "Could not initialize OS4 shortcut glass", error) }
                 }
-            }
             applyShortcutIconColorMode(shortcutContainer, shortcutIconColorMode(preferences))
         }
         log(
@@ -2450,7 +2845,7 @@ class HyperSystemUiModule : XposedModule() {
     ).coerceIn(SHORTCUT_ICON_COLOR_AUTO, SHORTCUT_ICON_COLOR_DARK)
 
     private fun installLockscreenNotificationHook(classLoader: ClassLoader, preferences: SharedPreferences) {
-        runCatching {
+        val shelfSpaceHookInstalled = runCatching {
             val legacyFlowClass = classLoader.loadClass(FOD_SHELF_SPACE_FLOW_CLASS)
             hook(legacyFlowClass.getDeclaredMethod("invokeSuspend", Any::class.java))
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
@@ -2458,34 +2853,134 @@ class HyperSystemUiModule : XposedModule() {
                 .intercept { chain ->
                     if (isNotificationFodPositionLimitRemoved(preferences)) false else chain.proceed()
                 }
+            true
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Could not install lockscreen notification shelf-space hook", error)
+        }.getOrDefault(false)
 
-            val positionFlowClass = classLoader.loadClass(FOD_NOTIFICATION_POSITION_FLOW_CLASS)
-            hook(positionFlowClass.getDeclaredMethod("invokeSuspend", Any::class.java))
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .setId("lockscreen-notification-fod-position")
-                .intercept { chain ->
-                    if (isNotificationFodPositionLimitRemoved(preferences)) {
+        val positionFlows = findFodNotificationPositionFlows(classLoader)
+        var positionHookCount = 0
+        positionFlows.forEachIndexed { index, positionFlowClass ->
+            runCatching {
+                val flowsField = positionFlowClass.getDeclaredField("\u0024flows\u0024inlined")
+                    .apply { isAccessible = true }
+                val collect = positionFlowClass.declaredMethods.firstOrNull { method ->
+                    method.name == "collect" && method.parameterCount == 2
+                } ?: error("nsslLockYPosition combine Flow.collect was not found")
+                hook(collect)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("lockscreen-notification-fod-position-$index")
+                    .intercept { chain ->
                         runCatching {
-                            val values = positionFlowClass
-                                .getDeclaredField("L\u00241")
-                                .apply { isAccessible = true }
-                                .get(chain.thisObject) as? Array<Any?>
-                            if (values != null && values.size > FOD_FLOW_HAS_ENROLLED_INDEX) {
-                                // Change only this layout flow input so it selects the standard
-                                // notification position and still emits a valid result.
-                                values[FOD_FLOW_HAS_ENROLLED_INDEX] = false
-                            }
+                            installFodEnrollmentFlowOverride(
+                                chain.thisObject,
+                                flowsField,
+                                positionFlowClass.classLoader,
+                                preferences,
+                            )
                         }.onFailure { error ->
                             log(Log.ERROR, TAG, "Could not override lockscreen FOD position", error)
                         }
+                        chain.proceed()
                     }
-                    chain.proceed()
-                }
-
-            log(Log.INFO, TAG, "Installed lockscreen notification FOD-position hooks")
-        }.onFailure { error ->
-            log(Log.ERROR, TAG, "Could not install lockscreen notification UDFPS-space hook", error)
+                positionHookCount += 1
+            }.onFailure { error ->
+                log(Log.WARN, TAG, "Could not install FOD-position hook for ${positionFlowClass.name}", error)
+            }
         }
+        if (shelfSpaceHookInstalled || positionHookCount > 0) {
+            log(
+                Log.INFO,
+                TAG,
+                "Installed lockscreen notification FOD hooks: shelf=$shelfSpaceHookInstalled, position=$positionHookCount",
+            )
+        } else {
+            log(Log.ERROR, TAG, "Could not locate lockscreen notification FOD-position flow")
+        }
+    }
+
+    private fun findFodNotificationPositionFlows(classLoader: ClassLoader): List<Class<*>> {
+        val result = LinkedHashSet<Class<*>>()
+        // Kotlin emits this combine Flow as a top-level synthetic class.  It is not reported by
+        // Class.getDeclaredClasses(), and the lambda ordinal changes whenever Xiaomi edits the
+        // controller.  Locate the stable Flow shape instead of depending on the ordinal or its
+        // nested SuspendLambda implementation.
+        for (ordinal in FOD_NOTIFICATION_POSITION_FLOW_ORDINAL_RANGE) {
+            val className = "$FOD_NOTIFICATION_POSITION_FLOW_PREFIX$ordinal$FOD_NOTIFICATION_POSITION_FLOW_SUFFIX"
+            runCatching { classLoader.loadClass(className) }
+                .getOrNull()
+                ?.takeIf { type ->
+                    type.declaredFields.any { it.name == "\u0024flows\u0024inlined" } &&
+                        type.declaredMethods.any { method ->
+                            method.name == "collect" && method.parameterCount == 2
+                        }
+                }
+                ?.let(result::add)
+        }
+        return result.toList()
+    }
+
+    /**
+     * Makes the final combine input (hasEnrolledTemplatesFlow) report false while the feature is
+     * enabled.  Decorating the source flow keeps preference changes live and leaves all other
+     * FOD behavior untouched.
+     */
+    private fun installFodEnrollmentFlowOverride(
+        combineFlow: Any?,
+        flowsField: java.lang.reflect.Field,
+        classLoader: ClassLoader,
+        preferences: SharedPreferences,
+    ) {
+        val owner = combineFlow ?: return
+        val flows = flowsField.get(owner) as? Array<Any?> ?: return
+        if (flows.isEmpty()) return
+        synchronized(fodEnrollmentFlowOverrides) {
+            if (fodEnrollmentFlowOverrides.containsKey(owner)) return
+            val sourceFlow = flows.lastOrNull() ?: return
+            val flowClass = classLoader.loadClass("kotlinx.coroutines.flow.Flow")
+            if (!flowClass.isInstance(sourceFlow)) return
+            flows[flows.lastIndex] = createFodEnrollmentFlowOverride(
+                sourceFlow,
+                flowClass,
+                classLoader,
+                preferences,
+            )
+            fodEnrollmentFlowOverrides[owner] = sourceFlow
+        }
+    }
+
+    private fun createFodEnrollmentFlowOverride(
+        sourceFlow: Any,
+        flowClass: Class<*>,
+        classLoader: ClassLoader,
+        preferences: SharedPreferences,
+    ): Any = java.lang.reflect.Proxy.newProxyInstance(
+        classLoader,
+        arrayOf(flowClass),
+    ) { _, method, args ->
+        val invocationArgs = args ?: emptyArray()
+        if (method.name != "collect" || invocationArgs.isEmpty()) {
+            return@newProxyInstance method.invoke(sourceFlow, *invocationArgs)
+        }
+        val originalCollector = invocationArgs[0] ?: return@newProxyInstance method.invoke(
+            sourceFlow,
+            *invocationArgs,
+        )
+        val collectorClass = method.parameterTypes.firstOrNull()
+            ?: return@newProxyInstance method.invoke(sourceFlow, *invocationArgs)
+        val forwardingCollector = java.lang.reflect.Proxy.newProxyInstance(
+            collectorClass.classLoader ?: classLoader,
+            arrayOf(collectorClass),
+        ) { _, collectorMethod, collectorArgs ->
+            val forwardedArgs = collectorArgs?.copyOf() ?: emptyArray()
+            if (collectorMethod.name == "emit" && forwardedArgs.isNotEmpty() &&
+                isNotificationFodPositionLimitRemoved(preferences)
+            ) {
+                forwardedArgs[0] = false
+            }
+            collectorMethod.invoke(originalCollector, *forwardedArgs)
+        }
+        method.invoke(sourceFlow, forwardingCollector, *invocationArgs.drop(1).toTypedArray())
     }
 
     private fun installLockscreenMediaNotificationHook(
@@ -2516,8 +3011,10 @@ class HyperSystemUiModule : XposedModule() {
                     val onKeyguard = chain.getArg(0) as? Boolean ?: false
                     if (onKeyguard) {
                         lockscreenRows += row
+                        if (isMediaRow(row, getEntry)) lockscreenMediaRows += row
                     } else {
                         lockscreenRows -= row
+                        lockscreenMediaRows -= row
                         if (lockscreenHiddenRows.remove(row)) row.visibility = View.VISIBLE
                     }
                     if (onKeyguard && shouldHideLockscreenMedia(preferences) && isMediaRow(row, getEntry)) {
@@ -2607,8 +3104,11 @@ class HyperSystemUiModule : XposedModule() {
     ) {
         runCatching {
             val headerClass = classLoader.loadClass(
-                "com.android.systemui.statusbar.notification.mediacontrol.MiuiMediaHeaderView",
+                MIUI_MEDIA_HEADER_VIEW_CLASS,
             )
+            LockscreenMediaPresentationBridge.onPresentationChanged = {
+                applyLockscreenMediaPresentation(preferences)
+            }
             // The media controller's keyguard callback is a generated nested class on this ROM.
             // KeyguardManager is not reliable from the SystemUI process during transitions, so
             // mirror the callback's boolean state instead.
@@ -2652,6 +3152,9 @@ class HyperSystemUiModule : XposedModule() {
                 .setId("lockscreen-hide-media-notification:media-header-visibility")
                 .intercept { chain ->
                     val result = chain.proceed()
+                    (chain.thisObject as? View)?.takeIf(headerClass::isInstance)?.let {
+                        lockscreenMediaHeaders += it
+                    }
                     if (shouldHideLockscreenMedia(preferences) &&
                         headerClass.isInstance(chain.thisObject) &&
                         (lockscreenMediaKeyguardShowing || isLockscreenMediaView(chain.thisObject)) &&
@@ -2674,6 +3177,11 @@ class HyperSystemUiModule : XposedModule() {
                     .setId("lockscreen-hide-media-notification:media-header-data-$index")
                     .intercept { chain ->
                         val result = chain.proceed()
+                        val header = (chain.thisObject as? View)?.takeIf(headerClass::isInstance)
+                        if (header != null) {
+                            lockscreenMediaHeaders += header
+                            installLockscreenMediaArtworkClick(header, preferences)
+                        }
                         if (shouldHideLockscreenMedia(preferences) &&
                             (lockscreenMediaKeyguardShowing || isLockscreenMediaView(chain.thisObject))
                         ) {
@@ -2682,12 +3190,38 @@ class HyperSystemUiModule : XposedModule() {
                         result
                     }
             }
+            // The holder is assigned independently from media-data updates on this ROM.  Bind
+            // after that assignment as well, otherwise the first shown media card can miss the
+            // artwork listener entirely.
+            val mediaViewHolderClass = classLoader.loadClass(
+                "com.android.systemui.statusbar.notification.mediacontrol.MiuiMediaViewHolder",
+            )
+            val setMediaViewHolder = headerClass.getMethod(
+                "setMediaViewHolder",
+                mediaViewHolderClass,
+            )
+            hook(setMediaViewHolder)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("lockscreen-media-presentation:media-view-holder")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    (chain.thisObject as? View)?.takeIf(headerClass::isInstance)?.let { header ->
+                        lockscreenMediaHeaders += header
+                        installLockscreenMediaArtworkClick(header, preferences)
+                        // Some holder children are attached on the next traversal.
+                        header.post {
+                            installLockscreenMediaArtworkClick(header, preferences)
+                        }
+                    }
+                    result
+                }
             log(
                 Log.INFO,
                 TAG,
                 "Installed MiuiMediaHeaderView lockscreen hide hook " +
-                    "(dataMethods=${dataMethods.size}, visibility=View.setVisibility)",
+                    "(dataMethods=${dataMethods.size}, visibility=View.setVisibility, artwork=true)",
             )
+            applyLockscreenMediaPresentation(preferences)
         }.onFailure { error ->
             log(Log.ERROR, TAG, "Could not install MiuiMediaHeaderView lockscreen hide hook", error)
         }
@@ -2753,7 +3287,7 @@ class HyperSystemUiModule : XposedModule() {
                             } else {
                                 true
                             }
-                            if (lockState && shouldHideLockscreenMedia(preferences) &&
+                            if (lockState && shouldFilterLockscreenMedia(preferences) &&
                                 isMediaEntry(chain.getArg(0))
                             ) {
                                 true
@@ -2792,7 +3326,7 @@ class HyperSystemUiModule : XposedModule() {
                 .setId("lockscreen-hide-media-notification:pipeline")
                 .intercept { chain ->
                     val entry = chain.getArg(0)
-                    if (shouldHideLockscreenMedia(preferences) &&
+                    if (shouldFilterLockscreenMedia(preferences) &&
                         isKeyguardCoordinatorOnKeyguard(chain.thisObject) &&
                         isMediaEntry(entry)
                     ) {
@@ -2826,7 +3360,7 @@ class HyperSystemUiModule : XposedModule() {
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .setId("lockscreen-hide-media-notification:tiny-panel-update")
                 .intercept { chain ->
-                    if (shouldHideLockscreenMedia(preferences)) {
+                    if (shouldFilterLockscreenMedia(preferences)) {
                         chain.proceedWith(arrayOf<Any?>(null))
                     } else {
                         chain.proceed()
@@ -2839,7 +3373,7 @@ class HyperSystemUiModule : XposedModule() {
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .setId("lockscreen-hide-media-notification:tiny-panel-merge")
                 .intercept { chain ->
-                    if (shouldHideLockscreenMedia(preferences)) {
+                    if (shouldFilterLockscreenMedia(preferences)) {
                         chain.proceedWith(arrayOf(chain.getArg(0), null, chain.getArg(2)))
                     } else {
                         chain.proceed()
@@ -2851,9 +3385,95 @@ class HyperSystemUiModule : XposedModule() {
         }
     }
 
+    private fun lockscreenMediaNotificationMode(preferences: SharedPreferences): Int = when {
+        preferences.contains(KEY_LOCKSCREEN_MINI_PLAYER_MEDIA_NOTIFICATION_MODE) ->
+            preferences.getInt(
+                KEY_LOCKSCREEN_MINI_PLAYER_MEDIA_NOTIFICATION_MODE,
+                LOCKSCREEN_MEDIA_NOTIFICATION_DO_NOT_HIDE,
+            ).coerceIn(LOCKSCREEN_MEDIA_NOTIFICATION_DO_NOT_HIDE, LOCKSCREEN_MEDIA_NOTIFICATION_DYNAMIC)
+        preferences.getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_HIDE_MEDIA_NOTIFICATION, false) ->
+            LOCKSCREEN_MEDIA_NOTIFICATION_ALWAYS_HIDE
+        else -> LOCKSCREEN_MEDIA_NOTIFICATION_DO_NOT_HIDE
+    }
+
     private fun shouldHideLockscreenMedia(preferences: SharedPreferences): Boolean =
+        preferences.getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, false) && when (
+            lockscreenMediaNotificationMode(preferences)
+        ) {
+            LOCKSCREEN_MEDIA_NOTIFICATION_ALWAYS_HIDE -> true
+            LOCKSCREEN_MEDIA_NOTIFICATION_DYNAMIC -> LockscreenMediaPresentationBridge.showMiniPlayer
+            else -> false
+        }
+
+    /** Dynamic mode must retain the notification entry so it can be shown after a card tap. */
+    private fun shouldFilterLockscreenMedia(preferences: SharedPreferences): Boolean =
         preferences.getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_ENABLED, false) &&
-            preferences.getBoolean(KEY_LOCKSCREEN_MINI_PLAYER_HIDE_MEDIA_NOTIFICATION, false)
+            lockscreenMediaNotificationMode(preferences) == LOCKSCREEN_MEDIA_NOTIFICATION_ALWAYS_HIDE
+
+    private fun applyLockscreenMediaPresentation(preferences: SharedPreferences) {
+        val hidden = shouldHideLockscreenMedia(preferences)
+        val headers = synchronized(lockscreenMediaHeaders) { lockscreenMediaHeaders.toList() }
+        headers.forEach { header ->
+            if (!isMiuiMediaHeaderView(header)) {
+                lockscreenMediaHeaders.remove(header)
+                return@forEach
+            }
+            if (hidden || lockscreenMediaKeyguardShowing || isLockscreenMediaView(header)) {
+                // SystemUI hosts the fingerprint and notification surfaces on separate loopers.
+                // A presentation change originates from the mini player, so apply each update
+                // through the target view's own queue instead of assuming the caller's thread.
+                // MiuiMediaHeaderView is shared by the keyguard and notification shade.
+                // Do not animate transforms on this real SystemUI view: an unlock or shade
+                // rebind can detach it before the animation end action runs, leaving the
+                // notification permanently scaled or transparent.
+                header.post {
+                    updateLockscreenMediaHeaderVisibility(header, hidden)
+                }
+            }
+        }
+        lockscreenMediaRows.toList().forEach { row ->
+            if (row in lockscreenRows) {
+                val visibility = if (hidden) View.GONE else View.VISIBLE
+                row.post { row.visibility = visibility }
+            }
+        }
+    }
+
+    private fun updateLockscreenMediaHeaderVisibility(header: View, hidden: Boolean) {
+        if (!isMiuiMediaHeaderView(header)) return
+        // Cancel any vendor animation currently targeting this shared view and restore the
+        // neutral visual state before changing visibility. This also repairs state left behind
+        // by older module versions without touching the notification's own background drawable.
+        header.animate().cancel()
+        header.alpha = 1f
+        header.scaleX = 1f
+        header.scaleY = 1f
+        header.visibility = if (hidden) View.GONE else View.VISIBLE
+    }
+
+    private fun installLockscreenMediaArtworkClick(header: View, preferences: SharedPreferences) {
+        val holder = readInstanceField(header, "mediaViewHolder") ?: return
+        val artworkViews = listOfNotNull(
+            readInstanceField(holder, "albumImageView") as? View,
+            readInstanceField(holder, "albumView") as? View,
+        )
+        artworkViews.forEach { artwork ->
+            artwork.setOnTouchListener { _, event ->
+                if (lockscreenMediaNotificationMode(preferences) != LOCKSCREEN_MEDIA_NOTIFICATION_DYNAMIC) {
+                    return@setOnTouchListener false
+                }
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_UP -> {
+                        log(Log.DEBUG, TAG, "System media artwork tapped; showing mini player")
+                        LockscreenMediaPresentationBridge.setShowMiniPlayer(true)
+                    }
+                }
+                // Consume the complete gesture so the vendor click listener cannot replace the
+                // presentation change after the artwork tap.
+                true
+            }
+        }
+    }
 
     private fun isLockscreenMediaView(target: Any?): Boolean = runCatching {
         val view = target as? View ?: return@runCatching false
@@ -2861,6 +3481,15 @@ class HyperSystemUiModule : XposedModule() {
             ?: return@runCatching false
         keyguardManager.isKeyguardLocked
     }.getOrDefault(false)
+
+    private fun isMiuiMediaHeaderView(view: View): Boolean {
+        var current: Class<*>? = view.javaClass
+        while (current != null) {
+            if (current.name == MIUI_MEDIA_HEADER_VIEW_CLASS) return true
+            current = current.superclass
+        }
+        return false
+    }
 
     private fun isMediaRow(row: View, getEntry: java.lang.reflect.Method): Boolean = runCatching {
         val entry = getEntry.invoke(row)
@@ -3201,11 +3830,20 @@ class HyperSystemUiModule : XposedModule() {
                 .setId("lockscreen-hide-charging-text")
                 .intercept { chain ->
                     val result = chain.proceed()
-                    if (preferences.getBoolean(KEY_HIDE_LOCKSCREEN_CHARGING_TEXT, false)) {
+                    val mask = preferences.getInt(KEY_LOCKSCREEN_BOTTOM_TEXT_MASK,
+                        if (preferences.getBoolean(KEY_HIDE_LOCKSCREEN_CHARGING_TEXT, false)) 1 else 0)
+                    if (mask != 0) {
                         runCatching {
                             val controller = rotateField.get(chain.thisObject) ?: return@runCatching
-                            controller.javaClass.getMethod("hideIndication", Int::class.javaPrimitiveType)
-                                .invoke(controller, CHARGING_INDICATION_TYPE)
+                            val hide = controller.javaClass.getMethod("hideIndication", Int::class.javaPrimitiveType)
+                            if (mask and LOCKSCREEN_TEXT_CHARGING != 0) hide.invoke(controller, CHARGING_INDICATION_TYPE)
+                            val messages = controller.javaClass.getDeclaredField("mIndicationMessages").apply { isAccessible = true }.get(controller) as? Map<*, *>
+                            messages?.forEach { (type, indication) ->
+                                val text = runCatching { indication?.javaClass?.getDeclaredField("mMessage")?.apply { isAccessible = true }?.get(indication)?.toString().orEmpty() }.getOrDefault("")
+                                val hideDnd = mask and LOCKSCREEN_TEXT_DND != 0 && (text.contains("勿扰") || text.contains("免打扰") || text.contains("Do not disturb", true))
+                                val hideNotifications = mask and LOCKSCREEN_TEXT_NOTIFICATIONS != 0 && (text.contains("通知") && (text.contains("条") || text.contains("X") || text.any { it.isDigit() }))
+                                if ((hideDnd || hideNotifications) && type is Int) hide.invoke(controller, type)
+                            }
                         }.onFailure { error ->
                             log(Log.ERROR, TAG, "Could not hide lockscreen charging text", error)
                         }
@@ -3309,6 +3947,136 @@ class HyperSystemUiModule : XposedModule() {
                 log(Log.DEBUG, TAG, "Deferred corner-radius target unavailable: $className", error)
             }
         }
+    }
+
+    /**
+     * HyperOS renders the DND and notification-count indications in a dedicated view rather
+     * than through KeyguardIndicationController. Hook its refresh methods and hide the concrete
+     * TextViews after the vendor code has updated their state.
+     */
+    private fun installLockscreenBottomTextViewHook(
+        classLoader: ClassLoader,
+        preferences: SharedPreferences,
+    ) {
+        runCatching {
+            val stateClass = classLoader.loadClass(NOTIFICATION_NUM_STATE_VIEW_CLASS)
+            val refreshMethods = stateClass.declaredMethods.filter {
+                it.name == "updateZenViewText" ||
+                    it.name == "updateNotificationCountView" ||
+                    it.name == "onFinishInflate"
+            }
+            if (refreshMethods.isEmpty()) {
+                log(Log.DEBUG, TAG, "NotificationNumStateView has no known refresh methods")
+                return@runCatching
+            }
+            refreshMethods.forEachIndexed { index, method ->
+                hook(method)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("lockscreen-bottom-text-view-$index")
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        applyLockscreenBottomTextVisibility(chain.thisObject, preferences, stateClass)
+                        result
+                    }
+            }
+            // The binder posts an animation after each state update. Its completion callback
+            // restores child visibility, so guard that shared animation helper as well.
+            runCatching {
+                val animateClass = classLoader.loadClass(NUM_STATE_VIEW_ANIMATE_EXT_CLASS)
+                animateClass.declaredMethods
+                    .filter { it.name == "animateUpdateViewVisibility" && it.parameterCount >= 1 }
+                    .forEachIndexed { index, method ->
+                        hook(method)
+                            .setExceptionMode(ExceptionMode.PROTECTIVE)
+                            .setId("lockscreen-bottom-text-animation-$index")
+                            .intercept { chain ->
+                                val view = chain.getArg(0) as? View
+                                val owner = generateSequence(view?.parent) { it.parent }
+                                    .firstOrNull { it.javaClass.name == NOTIFICATION_NUM_STATE_VIEW_CLASS }
+                                val mask = preferences.getInt(
+                                    KEY_LOCKSCREEN_BOTTOM_TEXT_MASK,
+                                    if (preferences.getBoolean(KEY_HIDE_LOCKSCREEN_CHARGING_TEXT, false)) {
+                                        LOCKSCREEN_TEXT_CHARGING
+                                    } else {
+                                        0
+                                    },
+                                )
+                                val ownerView = owner as? ViewGroup
+                                val countView = ownerView?.let { readViewField(it, "notificationCountView") }
+                                val zenView = ownerView?.let { readViewField(it, "zenView") }
+                                val divider = ownerView?.let { readViewField(it, "dividingLine") }
+                                val hide = (mask and LOCKSCREEN_TEXT_NOTIFICATIONS != 0 && view === countView) ||
+                                    (mask and LOCKSCREEN_TEXT_DND != 0 && view === zenView) ||
+                                    (mask and (LOCKSCREEN_TEXT_DND or LOCKSCREEN_TEXT_NOTIFICATIONS) != 0 && view === divider)
+                                if (hide && view != null) {
+                                    view.visibility = View.GONE
+                                    view.alpha = 0f
+                                    if (view === countView) {
+                                        (view as? TextView)?.text = ""
+                                        (view as? TextView)?.contentDescription = ""
+                                    }
+                                    null
+                                } else {
+                                    chain.proceed()
+                                }
+                            }
+                    }
+            }.onFailure { error ->
+                log(Log.DEBUG, TAG, "Optional lockscreen bottom-text animation hook unavailable", error)
+            }
+            log(Log.INFO, TAG, "Installed lockscreen bottom-text view hooks (${refreshMethods.size} methods)")
+        }.onFailure { error ->
+            log(Log.DEBUG, TAG, "Optional NotificationNumStateView hook unavailable", error)
+        }
+    }
+
+    private fun applyLockscreenBottomTextVisibility(
+        target: Any,
+        preferences: SharedPreferences,
+        targetClass: Class<*>,
+    ) {
+        val mask = preferences.getInt(
+            KEY_LOCKSCREEN_BOTTOM_TEXT_MASK,
+            if (preferences.getBoolean(KEY_HIDE_LOCKSCREEN_CHARGING_TEXT, false)) LOCKSCREEN_TEXT_CHARGING else 0,
+        )
+        if (mask == 0) return
+        fun fieldValue(name: String): Any? {
+            var type: Class<*>? = targetClass
+            while (type != null) {
+                val value = runCatching {
+                    type.getDeclaredField(name).apply { isAccessible = true }.get(target)
+                }.getOrNull()
+                if (value != null) return value
+                type = type.superclass
+            }
+            return null
+        }
+        if (mask and LOCKSCREEN_TEXT_DND != 0) {
+            (fieldValue("zenView") as? View)?.visibility = View.GONE
+        }
+        if (mask and LOCKSCREEN_TEXT_NOTIFICATIONS != 0) {
+            (fieldValue("notificationCountView") as? TextView)?.let {
+                it.text = ""
+                it.contentDescription = ""
+                it.visibility = View.GONE
+                it.alpha = 0f
+            }
+        }
+        if (mask and (LOCKSCREEN_TEXT_DND or LOCKSCREEN_TEXT_NOTIFICATIONS) != 0) {
+            (fieldValue("dividingLine") as? View)?.visibility = View.GONE
+        }
+    }
+
+    private fun readViewField(target: Any, name: String): View? {
+        var type: Class<*>? = target.javaClass
+        while (type != null) {
+            val value = runCatching {
+                type.getDeclaredField(name).apply { isAccessible = true }.get(target)
+            }.getOrNull()
+            if (value is View) return value
+            type = type.superclass
+        }
+        return null
     }
 
     /**
@@ -4289,8 +5057,10 @@ class HyperSystemUiModule : XposedModule() {
         private const val USER_OPEN_HIERARCHY_FIELD = "isUserOpenHierarchy"
         private const val FOD_SHELF_SPACE_FLOW_CLASS =
             "com.android.systemui.statusbar.notification.stack.domain.interactor.SharedNotificationContainerInteractor\$useExtraShelfSpace\$1"
-        private const val FOD_NOTIFICATION_POSITION_FLOW_CLASS =
-            "com.android.keyguard.panel.KeyguardPanelViewController\$nsslLockYPosition_delegate\$lambda\$106\$\$inlined\$combine\$1\$3"
+        private const val FOD_NOTIFICATION_POSITION_FLOW_PREFIX =
+            "com.android.keyguard.panel.KeyguardPanelViewController\$nsslLockYPosition_delegate\$lambda\$"
+        private const val FOD_NOTIFICATION_POSITION_FLOW_SUFFIX = "\$\$inlined\$combine\$1"
+        private val FOD_NOTIFICATION_POSITION_FLOW_ORDINAL_RANGE = 64..160
         private const val MIUI_GXZW_ICON_VIEW_CLASS =
             "com.miui.keyguard.biometrics.fod.MiuiGxzwIconView"
         private const val MIUI_GXZW_ANIM_MANAGER_CLASS =
@@ -4318,17 +5088,30 @@ class HyperSystemUiModule : XposedModule() {
             "com.miui.keyguard.editor.edit.wallpaper.WallpaperController\$Companion"
         private const val KEYGUARD_INDICATION_CONTROLLER_CLASS =
             "com.android.systemui.statusbar.KeyguardIndicationController"
+        private const val NOTIFICATION_NUM_STATE_VIEW_CLASS =
+            "com.miui.systemui.notification.view.NotificationNumStateView"
+        private const val NUM_STATE_VIEW_ANIMATE_EXT_CLASS =
+            "com.miui.systemui.notification.ext.NumStateViewAnimateExt"
         private const val MIUI_SHORTCUT_CONTROLLER_CLASS =
             "com.android.keyguard.shortcut.MiuiShortcutController"
+        private const val KEYGUARD_PIN_VIEW_CLASS = "com.android.keyguard.KeyguardPINView"
+        private val LOCKSCREEN_PIN_KEY_IDS = setOf(
+            "key0", "key1", "key2", "key3", "key4",
+            "key5", "key6", "key7", "key8", "key9",
+        )
+        private val LOCKSCREEN_PIN_ROW_IDS = listOf("row1", "row2", "row3", "row4")
+        private const val LOCKSCREEN_PIN_CIRCLE_TAG = "hyperchanger.lockscreen.pin.material"
+        private const val LOCKSCREEN_PIN_CIRCLE_RIPPLE_COLOR = 0x40FFFFFF
         private const val EXPANDABLE_NOTIFICATION_ROW_CLASS =
             "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow"
+        private const val MIUI_MEDIA_HEADER_VIEW_CLASS =
+            "com.android.systemui.statusbar.notification.mediacontrol.MiuiMediaHeaderView"
         private const val MI_GLASS_COMPAT_CLASS = "com.miui.systemui.util.MiGlassCompat"
         private const val CHARGING_INDICATION_TYPE = 3
         private const val IMAGE_THRESHOLD_FIELD = "IMAGE_THRESHOLD"
         private const val THRESHOLD_RATE_FIELD = "rate"
         private const val DEFAULT_DEPTH_IMAGE_THRESHOLD = 0.2
         private const val UNLIMITED_DEPTH_IMAGE_THRESHOLD = 1.0
-        private const val FOD_FLOW_HAS_ENROLLED_INDEX = 6
         private const val FOD_MODE_DEFAULT = 0
         private const val FOD_MODE_HIDE_ICON = 1
         private const val FOD_MODE_KEEP_ICON = 2
@@ -4377,6 +5160,8 @@ class HyperSystemUiModule : XposedModule() {
         private const val MIUI_MATERIAL_UTILS_CLASS =
             "com.miui.systemui.controlcenter.utils.MiuiMaterialUtils"
         private const val MIUI_THEME_UTILS_CLASS = "miui.systemui.util.ThemeUtils"
+        private const val MIUI_DEFAULT_THEME_CONTROLLER_IMPL_CLASS =
+            "miui.systemui.controlcenter.windowview.MiuiDefaultThemeControllerImpl"
         private const val CLOCK_UTILITY_CLASS = "com.miui.clock.allInOne.AllInOneUtil"
         private const val CLOCK_UTILITY_METHOD = "applyOtaClockParams"
         private const val CLOCK_EFFECT_OVERLAY = 2
@@ -4386,8 +5171,12 @@ class HyperSystemUiModule : XposedModule() {
             "miui.systemui.notification.NotificationSettingsManager"
         private const val SYSTEM_UI_NOTIFICATION_SETTINGS_MANAGER_CLASS =
             "com.miui.systemui.notification.NotificationSettingsManager"
+        private const val NOTIFICATION_PROVIDER_PUBLIC_CLASS =
+            "com.android.systemui.statusbar.notification.NotificationProviderPublic"
         private const val FOCUS_NOTIFICATION_UTILS_CLASS =
             "miui.systemui.notification.focus.FocusNotifUtils"
+        private const val FOCUS_NOTIFICATION_CONTROLLER_CLASS =
+            "miui.systemui.notification.focus.FocusNotificationController"
         private const val DYNAMIC_ISLAND_EVENT_COORDINATOR_CLASS =
             "miui.systemui.dynamicisland.event.DynamicIslandEventCoordinator"
         private const val ISLAND_STATE_CALLBACK_CONTROLLER_CLASS =
@@ -4448,7 +5237,7 @@ class HyperSystemUiModule : XposedModule() {
         private const val SHORTCUT_ICON_COLOR_LIGHT = 1
         private const val SHORTCUT_ICON_COLOR_DARK = 2
         private const val SHORTCUT_GLASS_TAG = "hyperchanger.lockscreen.shortcut.glass"
-        private val LOCKSCREEN_MINI_PLAYER_TAG = View.generateViewId()
+        private const val LOCKSCREEN_SHORTCUT_RETRY_DELAY_MS = 250L
         private val LOCKSCREEN_SHORTCUT_CONTAINER_IDS = setOf(
             "shortcut_view_left_layout",
             "shortcut_view_right_layout",
@@ -4539,10 +5328,18 @@ class HyperSystemUiModule : XposedModule() {
         private const val KEY_FINGERPRINT_HIDE_MODE = "fingerprint_hide_mode"
         private const val KEY_NOTIFICATIONS_IGNORE_FOD = "notifications_ignore_fod"
         private const val KEY_HIDE_LOCKSCREEN_CHARGING_TEXT = "hide_lockscreen_charging_text"
+        private const val KEY_LOCKSCREEN_BOTTOM_TEXT_MASK = "lockscreen_bottom_text_mask"
+        private const val LOCKSCREEN_TEXT_CHARGING = 1
+        private const val LOCKSCREEN_TEXT_DND = 2
+        private const val LOCKSCREEN_TEXT_NOTIFICATIONS = 4
         private const val KEY_LOCKSCREEN_SHORTCUT_GLASS_ENABLED = "lockscreen_shortcut_glass_enabled"
         private const val KEY_LOCKSCREEN_MINI_PLAYER_ENABLED = "lockscreen_mini_player_enabled"
+        private const val KEY_LOCKSCREEN_MINI_PLAYER_LYRICS_ENABLED =
+            "lockscreen_mini_player_lyrics_enabled"
         private const val KEY_LOCKSCREEN_MINI_PLAYER_HIDE_MEDIA_NOTIFICATION =
             "lockscreen_mini_player_hide_media_notification"
+        private const val KEY_LOCKSCREEN_MINI_PLAYER_MEDIA_NOTIFICATION_MODE =
+            "lockscreen_mini_player_media_notification_mode"
         private const val KEY_LOCKSCREEN_MINI_PLAYER_BACKGROUND_MODE =
             "lockscreen_mini_player_background_mode"
         private const val KEY_LOCKSCREEN_MINI_PLAYER_WIDTH = "lockscreen_mini_player_width"
@@ -4563,7 +5360,6 @@ class HyperSystemUiModule : XposedModule() {
         private const val KEY_MINI_PLAYER_SOFT_GLASS_LUMINANCE = "mini_player_soft_glass_luminance"
         private const val KEY_KEEP_SOFT_GLASS_AFTER_GLOBAL_THEME =
             "keep_soft_glass_after_global_theme"
-        private const val SOFT_GLASS_THEME_STARTUP_DELAY_MS = 1800L
         private const val KEY_REMOVE_CLOCK_MATERIAL_LIMIT = "remove_clock_material_limit"
         private const val KEY_HIDE_STATUS_BAR_NETWORK_TYPE = "hide_status_bar_network_type"
         private const val KEY_HIDE_STATUS_BAR_WIFI_STANDARD = "hide_status_bar_wifi_standard"
@@ -4615,6 +5411,7 @@ class HyperSystemUiModule : XposedModule() {
         private var systemUiDepthHookInstalled = false
         private var lockscreenChargingHookInstalled = false
         private var lockscreenShortcutGlassHookInstalled = false
+        private var lockscreenPinCircleBackgroundHookInstalled = false
         private var shadeMaterialHooksInstalled = false
         private var softGlassThemeSystemUiHookInstalled = false
         private var systemUiClockMaterialLimitHookInstalled = false
@@ -4623,25 +5420,38 @@ class HyperSystemUiModule : XposedModule() {
         private var softGlassThemePluginHookInstalled = false
         private var softGlassThemePluginFallbackHookInstalled = false
         private var dynamicPluginThemeHookInstalled = false
+        private var softGlassThemePluginMaterialHooksInstalled = false
         @Volatile private var themeOverrideReady = false
         private var themeActivationScheduled = false
         private var dynamicIslandHooksInstalled = false
         private var dynamicIslandClassDiscoveryInstalled = false
         private var focusIslandWhitelistSystemUiHooksInstalled = false
         private var focusIslandWhitelistPluginHooksInstalled = false
+        private val focusIslandWhitelistPluginInstalling = ThreadLocal.withInitial<Boolean> { false }
         private var superXiaoAiAppearanceHooksInstalled = false
         @Volatile private var lockscreenMediaKeyguardShowing = false
         private val lockscreenRows = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
         private val lockscreenHiddenRows = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
+        private val lockscreenMediaRows = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
+        private val lockscreenMediaHeaders = Collections.synchronizedSet(
+            Collections.newSetFromMap(WeakHashMap<View, Boolean>()),
+        )
+        private val lockscreenMiniPlayerControllers = Collections.synchronizedMap(
+            WeakHashMap<View, LockscreenMiniPlayerController>(),
+        )
+        private val fodEnrollmentFlowOverrides = WeakHashMap<Any, Any>()
         private val notificationGlassAppliedViews =
             Collections.newSetFromMap(WeakHashMap<View, Boolean>())
         private val notificationGlassApplying = ThreadLocal<Boolean>()
         private val controlCenterMaterialHits = Collections.synchronizedSet(mutableSetOf<String>())
         private val expandedIslandMaterialSettings =
             Collections.synchronizedMap(WeakHashMap<View, Int>())
-        private val cornerTargetClasses = Collections.newSetFromMap(WeakHashMap<Class<*>, Boolean>())
-        private val shadeMaterialHookedClasses = Collections.newSetFromMap(WeakHashMap<Class<*>, Boolean>())
-        private val volumePanelHookedClasses = Collections.newSetFromMap(WeakHashMap<Class<*>, Boolean>())
+        // ClassLoader discovery callbacks can arrive concurrently while SystemUI plugins are
+        // being torn down. WeakHashMap-backed sets are not safe for that path and can corrupt
+        // their table, leaving the main thread stuck in WeakHashMap.put during an ANR.
+        private val cornerTargetClasses = Collections.synchronizedSet(mutableSetOf<Class<*>>())
+        private val shadeMaterialHookedClasses = Collections.synchronizedSet(mutableSetOf<Class<*>>())
+        private val volumePanelHookedClasses = Collections.synchronizedSet(mutableSetOf<Class<*>>())
         private val volumePanelNativeApiLogged = Collections.synchronizedSet(mutableSetOf<String>())
         private val volumeNativeParameterHookHits = Collections.synchronizedSet(mutableSetOf<String>())
         private val volumePanelSurfaceRoots = Collections.synchronizedSet(

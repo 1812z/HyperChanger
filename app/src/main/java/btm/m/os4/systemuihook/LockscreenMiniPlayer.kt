@@ -20,19 +20,28 @@ import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.view.ViewOutlineProvider
 import android.view.ViewTreeObserver
+import android.view.ViewConfiguration
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import io.github.proify.lyricon.lyric.model.Song
+import io.github.proify.lyricon.subscriber.ActivePlayerListener
+import io.github.proify.lyricon.subscriber.LyriconFactory
+import io.github.proify.lyricon.subscriber.LyriconSubscriber
+import io.github.proify.lyricon.subscriber.ProviderInfo
 import java.util.Collections
 import java.util.WeakHashMap
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.abs
 
 internal const val MINI_PLAYER_BACKGROUND_DEFAULT = 0
 internal const val MINI_PLAYER_BACKGROUND_PURE = 1
@@ -68,6 +77,32 @@ internal object LockscreenMediaBridge {
     }
 }
 
+/** Coordinates the dynamic switch between the custom card and SystemUI's media notification. */
+internal object LockscreenMediaPresentationBridge {
+    private val listeners = Collections.newSetFromMap(WeakHashMap<LockscreenMiniPlayerController, Boolean>())
+
+    @Volatile var showMiniPlayer: Boolean = true
+        private set
+    @Volatile var onPresentationChanged: ((Boolean) -> Unit)? = null
+
+    fun register(controller: LockscreenMiniPlayerController) {
+        synchronized(listeners) { listeners += controller }
+        controller.onMediaPresentationChanged(showMiniPlayer)
+    }
+
+    fun unregister(controller: LockscreenMiniPlayerController) {
+        synchronized(listeners) { listeners -= controller }
+    }
+
+    fun setShowMiniPlayer(value: Boolean) {
+        if (showMiniPlayer == value) return
+        showMiniPlayer = value
+        val snapshot = synchronized(listeners) { listeners.toList() }
+        snapshot.forEach { it.onMediaPresentationChanged(value) }
+        onPresentationChanged?.invoke(value)
+    }
+}
+
 /** The SystemUI long-press menu is not part of the shortcut view hierarchy. */
 internal object LockscreenCustomizationMenuBridge {
     private val listeners = Collections.newSetFromMap(WeakHashMap<LockscreenMiniPlayerController, Boolean>())
@@ -95,6 +130,8 @@ internal class LockscreenMiniPlayerController(
     private val leftShortcut: View,
     private val rightShortcut: View,
     private val enabled: () -> Boolean,
+    private val lyricsEnabled: () -> Boolean,
+    private val mediaNotificationMode: () -> Int,
     private val appearance: () -> MiniPlayerAppearance,
     private val applyPlatformMaterial: (ImageView, MiniPlayerAppearance) -> Unit,
 ) {
@@ -104,13 +141,18 @@ internal class LockscreenMiniPlayerController(
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private var activeController: MediaController? = null
     private var player: LockscreenMiniPlayerView? = null
+    private var lyricsCard: LockscreenLyricsView? = null
+    private var lyricSubscriber: LyriconLockscreenSubscriber? = null
     private var refreshPosted = false
     private var positionPosted = false
     private var baseTranslationX = 0f
     private var baseTranslationY = 0f
+    private var lyricsBaseTranslationX = 0f
+    private var lyricsBaseTranslationY = 0f
     private var customizationLift = 0f
     private var customizationVisible = false
     private var customizationMenuVisible = false
+    private var mediaPresentationExitAnimating = false
     private val globalLayoutListener = ViewTreeObserver.OnGlobalLayoutListener {
         updateCustomizationLift()
     }
@@ -118,6 +160,7 @@ internal class LockscreenMiniPlayerController(
     private val sessionCallback = object : MediaSessionManager.OnActiveSessionsChangedListener {
         override fun onActiveSessionsChanged(controllers: MutableList<MediaController>?) {
             selectController(controllers.orEmpty())
+            refresh()
         }
     }
     private val controllerCallback = object : MediaController.Callback() {
@@ -132,23 +175,30 @@ internal class LockscreenMiniPlayerController(
         host.clipToPadding = false
         host.rootView.viewTreeObserver.addOnGlobalLayoutListener(globalLayoutListener)
         LockscreenCustomizationMenuBridge.register(this)
+        LockscreenMediaPresentationBridge.register(this)
         host.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
         leftShortcut.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
         rightShortcut.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
         runCatching {
             sessions?.addOnActiveSessionsChangedListener(sessionCallback, null, mainHandler)
             selectController(sessions?.getActiveSessions(null).orEmpty())
+            refresh()
         }.onFailure { scheduleRefresh() }
     }
 
     fun destroy() {
         LockscreenCustomizationMenuBridge.unregister(this)
+        LockscreenMediaPresentationBridge.unregister(this)
         runCatching { host.rootView.viewTreeObserver.removeOnGlobalLayoutListener(globalLayoutListener) }
         runCatching { sessions?.removeOnActiveSessionsChangedListener(sessionCallback) }
         runCatching { activeController?.unregisterCallback(controllerCallback) }
         runCatching { player?.let(host::removeView) }
+        runCatching { lyricsCard?.let(host::removeView) }
+        lyricSubscriber?.destroy()
         activeController = null
         player = null
+        lyricsCard = null
+        lyricSubscriber = null
         mainHandler.removeCallbacksAndMessages(null)
         positionPosted = false
     }
@@ -157,36 +207,102 @@ internal class LockscreenMiniPlayerController(
         val view = player ?: return
         val root = host.rootView as? ViewGroup ?: return
         if (!customizationMenuVisible) {
-            animateCustomizationLift(view, false, 0f)
+            animateCustomizationLift(false, 0f)
             return
         }
         val customButton = findCustomizationButton(root)
         if (customButton == null) {
             // onLongPress fires before the menu view has completed its first layout.
-            animateCustomizationLift(view, true, -dp(64f).toFloat())
+            animateCustomizationLift(true, -dp(64f).toFloat())
             return
         }
         val playerLocation = IntArray(2).also(view::getLocationOnScreen)
         val buttonLocation = IntArray(2).also(customButton::getLocationOnScreen)
         val overlap = playerLocation[1] + view.height - buttonLocation[1]
         val lift = if (overlap > 0) -(overlap + dp(12f)).toFloat() else 0f
-        animateCustomizationLift(view, true, lift)
+        animateCustomizationLift(true, lift)
     }
 
-    private fun animateCustomizationLift(view: View, visible: Boolean, lift: Float) {
+    private fun animateCustomizationLift(visible: Boolean, lift: Float) {
         if (customizationVisible == visible && kotlin.math.abs(customizationLift - lift) < 1f) return
         customizationVisible = visible
         customizationLift = lift
-        view.animate()
-            .translationY(baseTranslationY + lift)
-            .setDuration(280L)
-            .setInterpolator(android.view.animation.DecelerateInterpolator())
-            .start()
+        fun animate(view: View, baseY: Float) {
+            view.animate()
+                .translationY(baseY + lift)
+                .setDuration(280L)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
+        }
+        player?.let { animate(it, baseTranslationY) }
+        lyricsCard?.let { animate(it, lyricsBaseTranslationY) }
     }
 
     internal fun onCustomizationMenuVisibilityChanged(visible: Boolean) {
         customizationMenuVisible = visible
         mainHandler.post { updateCustomizationLift() }
+    }
+
+    internal fun onMediaPresentationChanged(showMiniPlayer: Boolean) {
+        mainHandler.post {
+            if (showMiniPlayer) {
+                mediaPresentationExitAnimating = false
+                refresh()
+                player?.let(::animateMiniPlayerIn)
+                lyricsCard?.takeIf { it.visibility == View.VISIBLE }?.let(::animateMiniPlayerIn)
+            } else {
+                animateMiniPlayerOut()
+            }
+        }
+    }
+
+    private fun animateMiniPlayerIn(view: View) {
+        view.animate().cancel()
+        view.visibility = View.VISIBLE
+        view.alpha = .68f
+        view.scaleX = .78f
+        view.scaleY = .78f
+        view.animate()
+            .alpha(1f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(MEDIA_PRESENTATION_ENTER_DURATION_MS)
+            .setInterpolator(android.view.animation.DecelerateInterpolator())
+            .start()
+    }
+
+    private fun animateMiniPlayerOut() {
+        val views = listOfNotNull(player, lyricsCard).filter { it.visibility == View.VISIBLE }
+        if (views.isEmpty()) {
+            mediaPresentationExitAnimating = false
+            refresh()
+            return
+        }
+        mediaPresentationExitAnimating = true
+        var pending = views.size
+        views.forEach { view ->
+            view.animate().cancel()
+            view.animate()
+                .alpha(.68f)
+                .scaleX(.78f)
+                .scaleY(.78f)
+                .setDuration(MEDIA_PRESENTATION_EXIT_DURATION_MS)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .withEndAction {
+                    pending -= 1
+                    if (pending == 0 && !LockscreenMediaPresentationBridge.showMiniPlayer) {
+                        mediaPresentationExitAnimating = false
+                        listOfNotNull(player, lyricsCard).forEach { card ->
+                            card.visibility = View.GONE
+                            card.alpha = 1f
+                            card.scaleX = 1f
+                            card.scaleY = 1f
+                        }
+                        refresh()
+                    }
+                }
+                .start()
+        }
     }
 
     private fun findCustomizationButton(root: ViewGroup): View? {
@@ -216,7 +332,6 @@ internal class LockscreenMiniPlayerController(
             ?: controllers.firstOrNull(::isUsable)
             ?: controllers.firstOrNull { it.metadata != null }
         setActiveController(selected)
-        refresh()
     }
 
     private fun setActiveController(selected: MediaController?) {
@@ -262,7 +377,12 @@ internal class LockscreenMiniPlayerController(
         val state = controller?.playbackState
         if (!enabled() || controller == null || !isUsable(controller)) {
             player?.visibility = View.GONE
+            lyricsCard?.visibility = View.GONE
             return
+        }
+        val mode = mediaNotificationMode()
+        if (mode != LOCKSCREEN_MEDIA_NOTIFICATION_DYNAMIC && !LockscreenMediaPresentationBridge.showMiniPlayer) {
+            LockscreenMediaPresentationBridge.setShowMiniPlayer(true)
         }
         val currentAppearance = appearance()
         val view = player ?: LockscreenMiniPlayerView(context).also {
@@ -278,7 +398,14 @@ internal class LockscreenMiniPlayerController(
                 ),
             )
         }
-        view.visibility = View.VISIBLE
+        val showMiniPlayer = !(
+            mode == LOCKSCREEN_MEDIA_NOTIFICATION_DYNAMIC && !LockscreenMediaPresentationBridge.showMiniPlayer
+        )
+        if (showMiniPlayer) {
+            view.visibility = View.VISIBLE
+        } else if (!mediaPresentationExitAnimating) {
+            view.visibility = View.GONE
+        }
         view.bind(
             title = controller.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
                 .ifBlank { "正在播放" },
@@ -290,8 +417,39 @@ internal class LockscreenMiniPlayerController(
             appearance = currentAppearance,
             applyPlatformMaterial = applyPlatformMaterial,
             onToggle = ::togglePlaybackSafely,
+            onSkipToPrevious = { skipTrackSafely(next = false) },
+            onSkipToNext = { skipTrackSafely(next = true) },
+            onShowSystemMediaNotification = {
+                if (mediaNotificationMode() == LOCKSCREEN_MEDIA_NOTIFICATION_DYNAMIC) {
+                    LockscreenMediaPresentationBridge.setShowMiniPlayer(false)
+                }
+            },
         )
+        bindLyrics(currentAppearance, showMiniPlayer)
         position()
+    }
+
+    private fun bindLyrics(appearance: MiniPlayerAppearance, showMiniPlayer: Boolean) {
+        if (!lyricsEnabled()) {
+            lyricsCard?.visibility = View.GONE
+            lyricSubscriber?.destroy()
+            lyricSubscriber = null
+            return
+        }
+        val subscriber = lyricSubscriber ?: LyriconLockscreenSubscriber(context) { scheduleRefresh() }.also {
+            lyricSubscriber = it
+        }
+        val lyric = subscriber.currentLyric() ?: run {
+            lyricsCard?.visibility = View.GONE
+            return
+        }
+        val view = lyricsCard ?: LockscreenLyricsView(context).also {
+            lyricsCard = it
+            it.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
+            host.addView(it, ViewGroup.LayoutParams(dp(240f), dp(52f)))
+        }
+        view.bind(lyric, appearance, applyPlatformMaterial)
+        view.visibility = if (showMiniPlayer) View.VISIBLE else View.GONE
     }
 
     private fun togglePlaybackSafely() {
@@ -312,21 +470,47 @@ internal class LockscreenMiniPlayerController(
                     if (controller != null && supportsAction) {
                         runCatching {
                             if (playing) controller.transportControls.pause() else controller.transportControls.play()
-                        }.onFailure { dispatchMediaKeyFallback() }
+                        }.onFailure { dispatchMediaKeyFallback(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }
                     } else {
-                        dispatchMediaKeyFallback()
+                        dispatchMediaKeyFallback(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
                     }
                 }
             }
         }
     }
 
-    private fun dispatchMediaKeyFallback() {
+    private fun skipTrackSafely(next: Boolean) {
+        // Use the active session when possible so the command follows the media app selected by
+        // SystemUI, then fall back to the standard media key for sessions without transport APIs.
+        runCatching {
+            mainHandler.post {
+                runCatching {
+                    val current = sessions?.getActiveSessions(null).orEmpty()
+                    if (current.isNotEmpty()) selectController(current)
+                    val controller = LockscreenMediaBridge.controller ?: activeController
+                    val state = controller?.playbackState
+                    val action = if (next) PlaybackState.ACTION_SKIP_TO_NEXT else PlaybackState.ACTION_SKIP_TO_PREVIOUS
+                    val keyCode = if (next) KeyEvent.KEYCODE_MEDIA_NEXT else KeyEvent.KEYCODE_MEDIA_PREVIOUS
+                    val supportsAction = state != null && state.actions and action != 0L
+                    if (controller != null && supportsAction) {
+                        runCatching {
+                            if (next) controller.transportControls.skipToNext()
+                            else controller.transportControls.skipToPrevious()
+                        }.onFailure { dispatchMediaKeyFallback(keyCode) }
+                    } else {
+                        dispatchMediaKeyFallback(keyCode)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun dispatchMediaKeyFallback(keyCode: Int) {
         val manager = audioManager ?: return
         val now = android.os.SystemClock.uptimeMillis()
         runCatching {
-            manager.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, 0))
-            manager.dispatchMediaKeyEvent(KeyEvent(now, android.os.SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, 0))
+            manager.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
+            manager.dispatchMediaKeyEvent(KeyEvent(now, android.os.SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyCode, 0))
         }
     }
 
@@ -341,14 +525,26 @@ internal class LockscreenMiniPlayerController(
 
     private fun position() {
         val view = player ?: return
-        if (host.width <= 0 || leftShortcut.width <= 0 || rightShortcut.width <= 0) return
+        if (host.width <= 0 || host.height <= 0) return
         val hostLocation = IntArray(2).also(host::getLocationOnScreen)
-        val leftLocation = IntArray(2).also(leftShortcut::getLocationOnScreen)
-        val rightLocation = IntArray(2).also(rightShortcut::getLocationOnScreen)
-        val centerX = ((leftLocation[0] + leftShortcut.width / 2f) +
-            (rightLocation[0] + rightShortcut.width / 2f)) / 2f - hostLocation[0]
-        val centerY = ((leftLocation[1] + leftShortcut.height / 2f) +
-            (rightLocation[1] + rightShortcut.height / 2f)) / 2f - hostLocation[1]
+        val shortcutsLaidOut = leftShortcut.width > 0 && leftShortcut.height > 0 &&
+            rightShortcut.width > 0 && rightShortcut.height > 0
+        val leftLocation = if (shortcutsLaidOut) IntArray(2).also(leftShortcut::getLocationOnScreen) else null
+        val rightLocation = if (shortcutsLaidOut) IntArray(2).also(rightShortcut::getLocationOnScreen) else null
+        // When lockscreen shortcuts are disabled, their containers remain in the hierarchy but
+        // have no measured bounds. Center against the host instead of leaving the card at (0, 0).
+        val centerX = if (leftLocation != null && rightLocation != null) {
+            ((leftLocation[0] + leftShortcut.width / 2f) +
+                (rightLocation[0] + rightShortcut.width / 2f)) / 2f - hostLocation[0]
+        } else {
+            host.width / 2f
+        }
+        val centerY = if (leftLocation != null && rightLocation != null) {
+            ((leftLocation[1] + leftShortcut.height / 2f) +
+                (rightLocation[1] + rightShortcut.height / 2f)) / 2f - hostLocation[1]
+        } else {
+            host.height / 2f
+        }
         val requested = appearance()
         val horizontalRoom = min(centerX, host.width - centerX) * 2f - dp(12f)
         val width = min(dp(requested.widthDp).toFloat(), min(host.width * .64f, horizontalRoom))
@@ -376,12 +572,319 @@ internal class LockscreenMiniPlayerController(
         }
         // Preserve the requested center across parent layout passes.
         baseTranslationX = centerX - actualWidth / 2f - view.left
-        baseTranslationY = centerY - actualHeight / 2f - view.top
+        val safeBottom = bottomSafeDistance()
+        val maxCenterY = host.height - safeBottom - actualHeight / 2f
+        // The shortcut host is only the bottom row (often shorter than the card itself). Allow a
+        // negative local center/translation so the card can rise above that host and clear the
+        // navigation gesture area instead of being clamped flush to the physical display edge.
+        val adjustedCenterY = min(centerY, maxCenterY)
+        baseTranslationY = adjustedCenterY - actualHeight / 2f - view.top
         view.translationX = baseTranslationX
         view.translationY = baseTranslationY + customizationLift
+        positionLyrics(view, leftLocation, rightLocation, hostLocation)
+    }
+
+    private fun positionLyrics(
+        playerView: View,
+        leftLocation: IntArray?,
+        rightLocation: IntArray?,
+        hostLocation: IntArray,
+    ) {
+        val view = lyricsCard ?: return
+        if (view.visibility != View.VISIBLE) return
+        val playerLeft = playerView.left + playerView.translationX
+        val playerRight = playerLeft + playerView.width
+        val left = if (leftLocation != null && rightLocation != null) {
+            min((leftLocation[0] - hostLocation[0]).toFloat(), playerLeft)
+        } else {
+            playerLeft
+        }
+        val right = if (leftLocation != null && rightLocation != null) {
+            max((rightLocation[0] - hostLocation[0] + rightShortcut.width).toFloat(), playerRight)
+        } else {
+            playerRight
+        }
+        val width = (right - left).toInt().coerceIn(dp(160f), host.width)
+        val height = max(dp(52f), (playerView.height * .86f).toInt())
+        val params = view.layoutParams
+        if (params == null || params.width != width || params.height != height) {
+            val updated = params ?: ViewGroup.LayoutParams(width, height)
+            updated.width = width
+            updated.height = height
+            view.layoutParams = updated
+            schedulePosition()
+            return
+        }
+        if (view.width <= 0 || view.height <= 0) {
+            schedulePosition()
+            return
+        }
+        val playerTop = playerView.top + baseTranslationY
+        val lyricTop = playerTop - dp(LYRICS_PLAYER_GAP_DP) - view.height
+        lyricsBaseTranslationX = left - view.left
+        lyricsBaseTranslationY = lyricTop - view.top
+        view.translationX = lyricsBaseTranslationX
+        view.translationY = lyricsBaseTranslationY + customizationLift
+    }
+
+    private fun bottomSafeDistance(): Float {
+        val systemBottomInset = runCatching {
+            host.rootWindowInsets?.getInsets(
+                WindowInsets.Type.navigationBars() or WindowInsets.Type.mandatorySystemGestures(),
+            )?.bottom ?: 0
+        }.getOrDefault(0)
+        return max(dp(MINI_PLAYER_MIN_BOTTOM_MARGIN_DP).toFloat(),
+            systemBottomInset + dp(MINI_PLAYER_INSET_EXTRA_DP).toFloat())
     }
 
     private fun dp(value: Float): Int = (value * context.resources.displayMetrics.density + .5f).toInt()
+
+    private companion object {
+        const val MEDIA_PRESENTATION_ENTER_DURATION_MS = 260L
+        const val MEDIA_PRESENTATION_EXIT_DURATION_MS = 220L
+        const val LYRICS_PLAYER_GAP_DP = 12f
+        const val MINI_PLAYER_MIN_BOTTOM_MARGIN_DP = 24f
+        const val MINI_PLAYER_INSET_EXTRA_DP = 8f
+    }
+}
+
+private data class LockscreenLyricLine(
+    val begin: Long,
+    val end: Long,
+    val text: String,
+    val translation: String,
+    val roma: String,
+)
+
+private data class LockscreenLyric(
+    val plainText: String = "",
+    val plainDetail: String = "",
+    val lines: List<LockscreenLyricLine> = emptyList(),
+    val position: Long = 0L,
+    val displayTranslation: Boolean = false,
+    val displayRoma: Boolean = false,
+) {
+    fun displayText(): Pair<String, String>? {
+        plainText.takeIf { it.isNotBlank() }?.let { return it to plainDetail }
+        val line = lines.firstOrNull { position in it.begin until it.end }
+            ?: lines.lastOrNull { it.begin <= position }
+            ?: lines.firstOrNull()
+            ?: return null
+        if (line.text.isBlank()) return null
+        val detail = when {
+            displayTranslation && line.translation.isNotBlank() -> line.translation
+            displayRoma && line.roma.isNotBlank() -> line.roma
+            else -> ""
+        }
+        return line.text to detail
+    }
+}
+
+/** Receives the active Lyricon Provider in the SystemUI process. */
+private class LyriconLockscreenSubscriber(
+    context: Context,
+    private val onChanged: () -> Unit,
+) {
+    private val handler = Handler(Looper.getMainLooper())
+    private val subscriber: LyriconSubscriber = LyriconFactory.createSubscriber(context.applicationContext)
+    private var lyric = LockscreenLyric()
+    private val listener = object : ActivePlayerListener {
+        override fun onActiveProviderChanged(providerInfo: ProviderInfo?) {
+            // A Provider can change before its song callback arrives. Clear the old lyric now,
+            // but keep display flags because Lyricon does not guarantee callback ordering.
+            update {
+                LockscreenLyric(
+                    displayTranslation = lyric.displayTranslation,
+                    displayRoma = lyric.displayRoma,
+                )
+            }
+        }
+
+        override fun onSongChanged(song: Song?) {
+            update {
+                LockscreenLyric(
+                    plainText = "",
+                    plainDetail = "",
+                    lines = song?.lyrics.orEmpty().map { line ->
+                        LockscreenLyricLine(
+                            begin = line.begin,
+                            end = line.end,
+                            text = line.text.orEmpty(),
+                            translation = line.translation.orEmpty(),
+                            roma = line.roma.orEmpty(),
+                        )
+                    },
+                    position = lyric.position,
+                    displayTranslation = lyric.displayTranslation,
+                    displayRoma = lyric.displayRoma,
+                )
+            }
+        }
+
+        override fun onReceiveText(text: String?) {
+            update {
+                val textLines = text.orEmpty()
+                    .lineSequence()
+                    .map(String::trim)
+                    .filter(String::isNotBlank)
+                    .toList()
+                lyric.copy(
+                    plainText = textLines.firstOrNull().orEmpty(),
+                    plainDetail = textLines.drop(1).joinToString(" / "),
+                    lines = emptyList(),
+                )
+            }
+        }
+
+        override fun onPlaybackStateChanged(isPlaying: Boolean) = Unit
+
+        override fun onPositionChanged(position: Long) {
+            update { lyric.copy(position = position) }
+        }
+
+        override fun onSeekTo(position: Long) = onPositionChanged(position)
+
+        override fun onDisplayTranslationChanged(isDisplayTranslation: Boolean) {
+            update { lyric.copy(displayTranslation = isDisplayTranslation) }
+        }
+
+        override fun onDisplayRomaChanged(isDisplayRoma: Boolean) {
+            update { lyric.copy(displayRoma = isDisplayRoma) }
+        }
+    }
+
+    init {
+        runCatching {
+            subscriber.subscribeActivePlayer(listener)
+            subscriber.register()
+        }
+    }
+
+    fun currentLyric(): LockscreenLyric? = lyric.takeIf { it.displayText() != null }
+
+    fun destroy() {
+        runCatching { subscriber.unsubscribeActivePlayer(listener) }
+        runCatching { subscriber.unregister() }
+        runCatching { subscriber.destroy() }
+        handler.removeCallbacksAndMessages(null)
+    }
+
+    private fun update(transform: () -> LockscreenLyric) {
+        handler.post {
+            lyric = transform()
+            onChanged()
+        }
+    }
+}
+
+private class LockscreenLyricsView(context: Context) : FrameLayout(context) {
+    private val materialLayer = ImageView(context)
+    private val mainLine = TextView(context)
+    private val detailLine = TextView(context)
+    private var lastAppearance: MiniPlayerAppearance? = null
+    private var hasDetailLine = false
+    private val density = resources.displayMetrics.density
+
+    init {
+        clipToOutline = true
+        outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, view.height / 2f)
+            }
+        }
+        materialLayer.scaleType = ImageView.ScaleType.FIT_XY
+        materialLayer.clipToOutline = true
+        materialLayer.outlineProvider = outlineProvider
+        addView(materialLayer, LayoutParams(-1, -1))
+        mainLine.apply {
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.MARQUEE
+            marqueeRepeatLimit = -1
+            isSelected = true
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
+        detailLine.apply {
+            setTextColor(Color.argb(224, 255, 255, 255))
+            textSize = 11.5f
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.MARQUEE
+            marqueeRepeatLimit = -1
+            isSelected = true
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+        }
+        addView(mainLine)
+        addView(detailLine)
+    }
+
+    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight)
+        updateTextGeometry()
+    }
+
+    fun bind(
+        lyric: LockscreenLyric,
+        appearance: MiniPlayerAppearance,
+        applyPlatformMaterial: (ImageView, MiniPlayerAppearance) -> Unit,
+    ) {
+        val (main, detail) = lyric.displayText() ?: return
+        mainLine.text = main
+        detailLine.text = detail
+        hasDetailLine = detail.isNotBlank()
+        if (lastAppearance != appearance) {
+            lastAppearance = appearance
+            materialLayer.setImageDrawable(
+                when (appearance.backgroundMode) {
+                    MINI_PLAYER_BACKGROUND_PURE -> rounded(appearance.pureColor, dp(40).toFloat())
+                    MINI_PLAYER_BACKGROUND_ADVANCED,
+                    MINI_PLAYER_BACKGROUND_SOFT_GLASS -> rounded(Color.argb(1, 255, 255, 255), dp(40).toFloat())
+                    else -> rounded(Color.argb(158, 31, 35, 36), dp(40).toFloat()).apply {
+                        setStroke(dp(1), Color.argb(78, 255, 255, 255))
+                    }
+                },
+            )
+            if (appearance.backgroundMode == MINI_PLAYER_BACKGROUND_ADVANCED ||
+                appearance.backgroundMode == MINI_PLAYER_BACKGROUND_SOFT_GLASS
+            ) {
+                applyPlatformMaterial(materialLayer, appearance)
+            }
+        }
+        updateTextGeometry()
+    }
+
+    private fun updateTextGeometry() {
+        val inset = dp(18)
+        if (!hasDetailLine) {
+            mainLine.layoutParams = LayoutParams(-1, -1, Gravity.CENTER).apply {
+                leftMargin = inset
+                rightMargin = inset
+            }
+            detailLine.visibility = View.GONE
+        } else {
+            mainLine.layoutParams = LayoutParams(-1, -2, Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
+                leftMargin = inset
+                rightMargin = inset
+                bottomMargin = height / 2
+            }
+            detailLine.layoutParams = LayoutParams(-1, -2, Gravity.CENTER_HORIZONTAL or Gravity.TOP).apply {
+                leftMargin = inset
+                rightMargin = inset
+                topMargin = height / 2
+            }
+            detailLine.visibility = View.VISIBLE
+        }
+    }
+
+    private fun rounded(color: Int, radius: Float): GradientDrawable = GradientDrawable().apply {
+        cornerRadius = radius
+        setColor(color)
+    }
+
+    private fun dp(value: Int): Int = (value * density + .5f).toInt()
 }
 
 private class LockscreenMiniPlayerView(context: Context) : FrameLayout(context) {
@@ -392,7 +895,14 @@ private class LockscreenMiniPlayerView(context: Context) : FrameLayout(context) 
     private val text = LinearLayout(context)
     private val toggle = ImageButton(context)
     private val density = resources.displayMetrics.density
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private var lastAppearance: MiniPlayerAppearance? = null
+    private var onSkipToPrevious: (() -> Unit)? = null
+    private var onSkipToNext: (() -> Unit)? = null
+    private var onShowSystemMediaNotification: (() -> Unit)? = null
+    private var downX = 0f
+    private var downY = 0f
+    private var trackingSwipe = false
 
     init {
         clipToOutline = true
@@ -453,6 +963,67 @@ private class LockscreenMiniPlayerView(context: Context) : FrameLayout(context) 
         addView(toggle)
     }
 
+    override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.x
+                downY = event.y
+                trackingSwipe = true
+                // NotificationPanelView recognizes horizontal lockscreen gestures before its
+                // children. Keep this pointer stream with the player once it starts inside the
+                // card, then release the parent chain at the end of the gesture.
+                parent?.requestDisallowInterceptTouchEvent(true)
+            }
+            MotionEvent.ACTION_MOVE -> if (trackingSwipe) {
+                val horizontalDistance = abs(event.x - downX)
+                val verticalDistance = abs(event.y - downY)
+                if (horizontalDistance > touchSlop && horizontalDistance > verticalDistance) {
+                    // Intercept only after a clearly horizontal movement so the toggle remains
+                    // clickable and vertical lockscreen gestures keep their normal behavior.
+                    return true
+                }
+            }
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                trackingSwipe = false
+                parent?.requestDisallowInterceptTouchEvent(false)
+            }
+        }
+        return false
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.x
+                downY = event.y
+                trackingSwipe = true
+            }
+            MotionEvent.ACTION_UP -> {
+                val horizontalDistance = event.x - downX
+                val verticalDistance = event.y - downY
+                val minimumSwipeDistance = max(dp(48).toFloat(), width * .15f)
+                if (trackingSwipe &&
+                    abs(horizontalDistance) >= minimumSwipeDistance &&
+                    abs(horizontalDistance) > abs(verticalDistance)
+                ) {
+                    if (horizontalDistance < 0f) onSkipToNext?.invoke() else onSkipToPrevious?.invoke()
+                } else if (trackingSwipe &&
+                    abs(horizontalDistance) <= touchSlop && abs(verticalDistance) <= touchSlop
+                ) {
+                    onShowSystemMediaNotification?.invoke()
+                }
+                trackingSwipe = false
+                parent?.requestDisallowInterceptTouchEvent(false)
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                trackingSwipe = false
+                parent?.requestDisallowInterceptTouchEvent(false)
+            }
+        }
+        return true
+    }
+
     fun bind(
         title: String,
         artist: String,
@@ -461,6 +1032,9 @@ private class LockscreenMiniPlayerView(context: Context) : FrameLayout(context) 
         appearance: MiniPlayerAppearance,
         applyPlatformMaterial: (ImageView, MiniPlayerAppearance) -> Unit,
         onToggle: () -> Unit,
+        onSkipToPrevious: () -> Unit,
+        onSkipToNext: () -> Unit,
+        onShowSystemMediaNotification: () -> Unit,
     ) {
         if (lastAppearance != appearance) {
             lastAppearance = appearance
@@ -472,6 +1046,9 @@ private class LockscreenMiniPlayerView(context: Context) : FrameLayout(context) 
         this.artwork.setImageBitmap(artwork)
         toggle.setImageDrawable(PlayerToggleDrawable(playing))
         toggle.setOnClickListener { onToggle() }
+        this.onSkipToPrevious = onSkipToPrevious
+        this.onSkipToNext = onSkipToNext
+        this.onShowSystemMediaNotification = onShowSystemMediaNotification
     }
 
     private fun applyAppearance(
@@ -545,9 +1122,19 @@ private class PlayerToggleDrawable(private val playing: Boolean) : Drawable() {
             canvas.drawRoundRect(left + barWidth + gap, top, left + barWidth * 2 + gap, bottom, radius, radius, paint)
         } else {
             val path = Path().apply {
-                moveTo(width * .31f, height * .18f)
-                lineTo(width * .31f, height * .82f)
-                lineTo(width * .79f, height * .5f)
+                val left = width * .31f
+                val top = height * .18f
+                val bottom = height * .82f
+                val tip = width * .79f
+                val centerY = height * .5f
+                val corner = min(width, height) * .075f
+                moveTo(left, top + corner)
+                lineTo(left, bottom - corner)
+                quadTo(left, bottom, left + corner * 1.35f, bottom - corner * .9f)
+                lineTo(tip - corner * 1.65f, centerY + corner * 1.1f)
+                quadTo(tip, centerY, tip - corner * 1.65f, centerY - corner * 1.1f)
+                lineTo(left + corner * 1.35f, top + corner * .9f)
+                quadTo(left, top, left, top + corner)
                 close()
             }
             canvas.drawPath(path, paint)

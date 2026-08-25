@@ -40,9 +40,6 @@ public final class LeicaUnlockHook extends XposedModule {
     private final Map<String, Method> nativeFocalMethods = new ConcurrentHashMap<>();
     private final Map<CaptureRequest.Builder, Integer> legendaryBuilders =
             Collections.synchronizedMap(new WeakHashMap<>());
-    /** Builder.set() is hooked below; prevent fallback writes from re-entering mode tracking. */
-    private final ThreadLocal<Boolean> legendaryFallbackWrite =
-            ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final Set<Class<?>> galleryWatermarkManagers = ConcurrentHashMap.newKeySet();
     private final Set<Class<?>> galleryWatermarkCapabilityClasses = ConcurrentHashMap.newKeySet();
     private final Set<Class<?>> galleryWatermarkUsageClasses = ConcurrentHashMap.newKeySet();
@@ -52,6 +49,10 @@ public final class LeicaUnlockHook extends XposedModule {
     private Object deviceConfigLazy;
     private Map<Field, Object> deviceConfigEvaluatedState;
     private Field deviceConfigValueField;
+    private Field modernConfigCacheField;
+    private Field modernConfigDeviceField;
+    private boolean modernConfigProvider;
+    private volatile boolean modernDeviceSelectorOverride;
     private boolean cameraFactoryTouched;
     private volatile boolean galleryWatermarkClassLoadHookInstalled;
 
@@ -179,6 +180,20 @@ public final class LeicaUnlockHook extends XposedModule {
     }
 
     private void captureNativeFocalLengthConfig(ClassLoader classLoader) {
+        try {
+            Class.forName(CAMERA_CONFIG_FACTORY, true, classLoader);
+            captureLegacyNativeFocalLengthConfig(classLoader);
+            return;
+        } catch (ClassNotFoundException ignored) {
+            log(Log.INFO, TAG, "Legacy camera configuration factory is absent; using Ag.f provider");
+        } catch (LinkageError error) {
+            log(Log.INFO, TAG, "Legacy camera configuration factory is unavailable; using Ag.f provider", error);
+        }
+
+        captureModernNativeFocalLengthConfig(classLoader);
+    }
+
+    private void captureLegacyNativeFocalLengthConfig(ClassLoader classLoader) {
         Map<Field, Object> lazyState = null;
         Object lazy = null;
         Field cachedConfig = null;
@@ -204,6 +219,7 @@ public final class LeicaUnlockHook extends XposedModule {
             restoreMutableFields(lazy, lazyState);
             cameraConfigGetter = getConfig;
             cameraConfigCacheField = cachedConfig;
+            modernConfigProvider = false;
             deviceSelectorClass = selectorClass;
             deviceConfigLazy = lazy;
             deviceConfigEvaluatedState = evaluatedState;
@@ -223,6 +239,72 @@ public final class LeicaUnlockHook extends XposedModule {
                     "Unable to preserve native focal configuration; continuing with the Nezha profile",
                     error
             );
+        }
+    }
+
+    private void captureModernNativeFocalLengthConfig(ClassLoader classLoader) {
+        Field providerCache = null;
+        try {
+            Class<?> providerClass = Class.forName("Ag.f", true, classLoader);
+            Method getConfig = providerClass.getDeclaredMethod("k");
+            getConfig.setAccessible(true);
+            providerCache = providerClass.getDeclaredField("b");
+            providerCache.setAccessible(true);
+            Field providerDevice = providerClass.getDeclaredField("c");
+            providerDevice.setAccessible(true);
+            Class<?> selectorClass = Class.forName("Je.a", true, classLoader);
+            Field selectorField = selectorClass.getDeclaredField("c");
+            selectorField.setAccessible(true);
+            Object deviceSelector = selectorField.get(null);
+
+            Object localConfig = getConfig.invoke(null);
+            if (localConfig == null) {
+                throw new IllegalStateException("Ag.f returned a null camera configuration");
+            }
+
+            cameraFactoryTouched = true;
+            modernConfigProvider = true;
+            cameraConfigGetter = getConfig;
+            cameraConfigCacheField = providerCache;
+            modernConfigCacheField = providerCache;
+            modernConfigDeviceField = providerDevice;
+            deviceConfigLazy = deviceSelector;
+            nativeCameraConfig = localConfig;
+            nezhaCameraConfig = null;
+            nativeFocalMethods.clear();
+            installModernDeviceSelectorHook(deviceSelector);
+            log(Log.INFO, TAG, "Captured native camera configuration via Ag.f: "
+                    + localConfig.getClass().getName()
+                    + ", device=" + providerDevice.get(null));
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError error) {
+            clearFactoryCache(providerCache);
+            nativeCameraConfig = null;
+            nezhaCameraConfig = null;
+            nativeFocalMethods.clear();
+            log(Log.WARN, TAG, "Unable to capture the modern native focal configuration", error);
+        }
+    }
+
+    private void installModernDeviceSelectorHook(Object deviceSelector) {
+        if (deviceSelector == null) {
+            throw new IllegalStateException("Je.a device selector Lazy is null");
+        }
+        try {
+            Method getValue = deviceSelector.getClass().getMethod("getValue");
+            getValue.setAccessible(true);
+            hook(getValue)
+                    .setPriority(PRIORITY_HIGHEST)
+                    .setId("modern_device_selector")
+                    .intercept(chain -> {
+                        if (modernDeviceSelectorOverride
+                                && chain.getThisObject() == deviceSelector
+                                && isEnabled()) {
+                            return "nezha";
+                        }
+                        return chain.proceed();
+                    });
+        } catch (ReflectiveOperationException | RuntimeException error) {
+            throw new IllegalStateException("Unable to hook the modern device selector Lazy", error);
         }
     }
 
@@ -282,6 +364,9 @@ public final class LeicaUnlockHook extends XposedModule {
     }
 
     private boolean activateNezhaCameraConfig() {
+        if (modernConfigProvider) {
+            return activateModernNezhaCameraConfig();
+        }
         try {
             if (!resetCameraFactoryForNezha()) {
                 return false;
@@ -300,7 +385,7 @@ public final class LeicaUnlockHook extends XposedModule {
                 try {
                     Method delegate = nativeCameraConfig.getClass().getMethod(methodName);
                     delegate.setAccessible(true);
-                    replacementConfig.getClass().getDeclaredMethod(methodName).setAccessible(true);
+                    replacementConfig.getClass().getMethod(methodName).setAccessible(true);
                     nativeFocalMethods.put(methodName, delegate);
                 } catch (ReflectiveOperationException | RuntimeException error) {
                     log(Log.WARN, TAG, "Unable to map focal configuration method " + methodName, error);
@@ -316,7 +401,59 @@ public final class LeicaUnlockHook extends XposedModule {
         }
     }
 
+    private boolean activateModernNezhaCameraConfig() {
+        try {
+            if (cameraConfigGetter == null
+                    || modernConfigCacheField == null
+                    || modernConfigDeviceField == null) {
+                throw new IllegalStateException("Modern camera configuration provider state is incomplete");
+            }
+
+            modernDeviceSelectorOverride = true;
+            modernConfigDeviceField.set(null, "nezha");
+            clearFactoryCache(modernConfigCacheField);
+            Object replacementConfig = cameraConfigGetter.invoke(null);
+            if (replacementConfig == null) {
+                throw new IllegalStateException("Ag.f returned a null Nezha camera configuration");
+            }
+            if (replacementConfig.getClass() == nativeCameraConfig.getClass()) {
+                throw new IllegalStateException("Ag.f returned the native configuration after switching to Nezha");
+            }
+
+            nezhaCameraConfig = replacementConfig;
+            nativeFocalMethods.clear();
+            for (String methodName : FOCAL_CONFIG_METHODS) {
+                try {
+                    Method delegate = nativeCameraConfig.getClass().getMethod(methodName);
+                    delegate.setAccessible(true);
+                    replacementConfig.getClass().getMethod(methodName).setAccessible(true);
+                    nativeFocalMethods.put(methodName, delegate);
+                } catch (ReflectiveOperationException | RuntimeException error) {
+                    log(Log.WARN, TAG, "Unable to map modern focal configuration method " + methodName, error);
+                }
+            }
+            log(Log.INFO, TAG, "Activated modern Nezha configuration " + replacementConfig.getClass().getName());
+            return true;
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError error) {
+            nezhaCameraConfig = null;
+            nativeFocalMethods.clear();
+            log(Log.WARN, TAG, "Unable to activate the modern Nezha camera configuration", error);
+            return false;
+        }
+    }
+
     private boolean resetCameraFactoryForNezha() {
+        if (modernConfigProvider) {
+            try {
+                modernDeviceSelectorOverride = true;
+                modernConfigDeviceField.set(null, "nezha");
+                clearFactoryCache(modernConfigCacheField);
+                return true;
+            } catch (IllegalAccessException | RuntimeException error) {
+                log(Log.WARN, TAG, "Unable to reset the modern Camera configuration provider", error);
+                return false;
+            }
+        }
         try {
             if (deviceSelectorClass == null
                     || deviceConfigLazy == null
@@ -394,7 +531,7 @@ public final class LeicaUnlockHook extends XposedModule {
         int installed = 0;
         for (String methodName : FOCAL_CONFIG_METHODS) {
             try {
-                Method target = nezhaConfigClass.getDeclaredMethod(methodName);
+                Method target = nezhaConfigClass.getMethod(methodName);
                 target.setAccessible(true);
                 hook(target)
                         .setPriority(PRIORITY_HIGHEST)
@@ -438,7 +575,7 @@ public final class LeicaUnlockHook extends XposedModule {
             return;
         }
         try {
-            Method target = replacementConfig.getClass().getDeclaredMethod("d");
+            Method target = replacementConfig.getClass().getMethod("d");
             Method delegate = localConfig.getClass().getMethod("d");
             target.setAccessible(true);
             delegate.setAccessible(true);
@@ -481,9 +618,6 @@ public final class LeicaUnlockHook extends XposedModule {
                         if (!isEnabled()) {
                             return chain.proceed();
                         }
-                        if (Boolean.TRUE.equals(legendaryFallbackWrite.get())) {
-                            return chain.proceed();
-                        }
                         if (!(chain.getThisObject() instanceof CaptureRequest.Builder builder)
                                 || !(chain.getArg(0) instanceof CaptureRequest.Key<?> key)) {
                             return chain.proceed();
@@ -497,15 +631,7 @@ public final class LeicaUnlockHook extends XposedModule {
                             } else {
                                 legendaryBuilders.put(builder, legendaryMode);
                             }
-                            Object result;
-                            try {
-                                // A vendor tag can be advertised by the APK but absent on the
-                                // device HAL. Do not let that optional write crash the camera.
-                                result = chain.proceed();
-                            } catch (RuntimeException | LinkageError error) {
-                                log(Log.WARN, TAG, "Legendary vendor tag is unavailable; using Camera2 fallback", error);
-                                result = null;
-                            }
+                            Object result = chain.proceed();
                             if (legendaryMode != null) {
                                 applyLegendaryCamera2Fallback(builder, legendaryMode);
                             }
@@ -829,10 +955,6 @@ public final class LeicaUnlockHook extends XposedModule {
     }
 
     private void applyLegendaryCamera2Fallback(CaptureRequest.Builder builder, int legendaryMode) {
-        if (Boolean.TRUE.equals(legendaryFallbackWrite.get())) {
-            return;
-        }
-        legendaryFallbackWrite.set(Boolean.TRUE);
         try {
             builder.set(
                     CaptureRequest.CONTROL_EFFECT_MODE,
@@ -848,8 +970,6 @@ public final class LeicaUnlockHook extends XposedModule {
             );
         } catch (RuntimeException | LinkageError error) {
             log(Log.WARN, TAG, "Unable to apply Legendary Camera2 compatibility parameters", error);
-        } finally {
-            legendaryFallbackWrite.remove();
         }
     }
 

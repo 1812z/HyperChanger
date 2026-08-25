@@ -45,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -96,13 +97,12 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.FloatingNavigationBar
-import top.yukonga.miuix.kmp.basic.FloatingNavigationBarItem
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarDisplayMode
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.blur.Backdrop as MiuixBackdrop
 import top.yukonga.miuix.kmp.blur.drawBackdrop as drawMiuixBackdrop
+import top.yukonga.miuix.kmp.blur.highlight.Highlight as MiuixHighlight
 import top.yukonga.miuix.kmp.blur.textureBlurEffect
 import top.yukonga.miuix.kmp.shader.isRuntimeShaderSupported
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
@@ -155,6 +155,35 @@ private class NativeViewMiuixBackdrop(
     }
 }
 
+/** Bridges the page-only Kyant backdrop into MIUIX Blur without redrawing the ComposeView. */
+private class KyantMiuixBackdrop(
+    private val delegate: Backdrop,
+) : MiuixBackdrop {
+    override val isCoordinatesDependent: Boolean = delegate.isCoordinatesDependent
+
+    override fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBackdrop(
+        density: androidx.compose.ui.unit.Density,
+        coordinates: LayoutCoordinates?,
+        layerBlock: (GraphicsLayerScope.() -> Unit)?,
+        downscaleFactor: Int,
+    ) {
+        val target = coordinates ?: return
+        // MIUIX records the backdrop at a downsampled level. Match that scale when
+        // drawing the page layer, otherwise the sampled content appears enlarged/offset.
+        val canvas = drawContext.canvas.nativeCanvas
+        val scale = 1f / downscaleFactor.coerceAtLeast(1)
+        canvas.save()
+        canvas.scale(scale, scale)
+        try {
+            with(delegate) {
+                this@drawBackdrop.drawBackdrop(density, target, layerBlock)
+            }
+        } finally {
+            canvas.restore()
+        }
+    }
+}
+
 @Composable
 fun CustomNavigation(
     sourceView: View,
@@ -178,11 +207,7 @@ fun CustomNavigation(
     if (tabs.isEmpty()) return
     val style = NavigationStyle.fromPreference(navigationStyle)
     val requestedMode = LabelMode.fromPreference(labelMode)
-    val effectiveMode = if (style == NavigationStyle.HYPER_OS_FLOATING || forceFloatingGlass) {
-        LabelMode.ICON_ONLY
-    } else {
-        requestedMode
-    }
+    val effectiveMode = requestedMode
     val systemIsDarkTheme = sourceView.resources.configuration.uiMode and
         Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
     val hostIsDarkTheme = when (AppColorMode.fromPreference(colorMode)) {
@@ -198,6 +223,7 @@ fun CustomNavigation(
                 HostBottomBarConcealment(backdrop, hostIsDarkTheme, density)
             }
             HyperNavigation(
+                sourceView = sourceView,
                 tabs = tabs,
                 selectedIndex = selectedIndex,
                 floating = style == NavigationStyle.HYPER_OS_FLOATING || forceFloatingGlass,
@@ -714,6 +740,7 @@ private fun MiniPlayerControlButton(
 
 @Composable
 private fun HyperNavigation(
+    sourceView: View,
     tabs: List<HostTab>,
     selectedIndex: MutableIntState,
     floating: Boolean,
@@ -743,72 +770,23 @@ private fun HyperNavigation(
         }
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
             if (floating) {
-                val shape = RoundedCornerShape(28.dp)
-                val modifier = if (useAdvancedMaterial) {
-                    Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { shape },
-                        effects = {
-                            vibrancy()
-                            blur(materialBlurRadius)
-                        },
-                        highlight = {
-                            Highlight.Default.copy(
-                                width = 1.5.dp,
-                                blurRadius = 0.6.dp,
-                                alpha = if (isDarkTheme) 0.9f else 1f
-                            )
-                        },
-                        onDrawSurface = {
-                            drawRect(
-                                if (isDarkTheme) Color.Black.copy(alpha = 0.3f)
-                                else Color.White.copy(alpha = 0.28f)
-                            )
-                        }
-                    )
-                } else {
-                    Modifier
-                }
-                FloatingNavigationBar(
-                    modifier = modifier,
-                    color = if (useAdvancedMaterial) {
-                        Color.Transparent
-                    } else {
-                        MiuixTheme.colorScheme.surfaceContainer
-                    },
-                    cornerRadius = 28.dp,
-                    shadowElevation = 0.dp,
-                    showDivider = false,
-                    defaultWindowInsetsPadding = true
-                ) {
-                    tabs.forEachIndexed { index, tab ->
-                        if (tabIconContent != null) {
-                            FontNavigationItem(
-                                selected = selectedIndex.intValue == index,
-                                onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); tab.onClick() },
-                                label = if (showLabels) tab.label else "",
-                                modifier = Modifier.width(56.dp),
-                                selectedColor = accentColorOverride,
-                                icon = { color ->
-                                    if (showIcons) {
-                                        tabIconContent(index, color)
-                                    }
-                                }
-                            )
-                        } else {
-                            FloatingNavigationBarItem(
-                                selected = selectedIndex.intValue == index,
-                                onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); tab.onClick() },
-                                icon = if (showIcons) {
-                                    tab.icon ?: tabImageVector?.invoke(index) ?: hyperIcon(tab.label)
-                                } else {
-                                    HyperIcons.Empty
-                                },
-                                label = if (showLabels) tab.label else ""
-                            )
-                        }
+                HyperFloatingNavigationBar(
+                    tabs = tabs,
+                    selectedIndex = selectedIndex,
+                    backdrop = backdrop,
+                    blurRadius = blurRadius.coerceIn(0, 40).toFloat(),
+                    showIcons = showIcons,
+                    showLabels = showLabels,
+                    advancedMaterial = useAdvancedMaterial,
+                    isDarkTheme = isDarkTheme,
+                    accentColorOverride = accentColorOverride,
+                    tabImageVector = tabImageVector,
+                    tabIconContent = tabIconContent,
+                    onTabSelected = { index ->
+                        view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                        tabs[index].onClick()
                     }
-                }
+                )
             } else {
                 val standardBarMaterial = if (useAdvancedMaterial) {
                     Modifier.drawBackdrop(
@@ -887,6 +865,210 @@ private fun HyperNavigation(
                     }
                 }
             }
+        }
+    }
+}
+
+/** OS4-style floating navigation: one capsule, a moving selected pill, and a damped drag. */
+@Composable
+private fun HyperFloatingNavigationBar(
+    tabs: List<HostTab>,
+    selectedIndex: MutableIntState,
+    backdrop: Backdrop,
+    blurRadius: Float,
+    showIcons: Boolean,
+    showLabels: Boolean,
+    advancedMaterial: Boolean,
+    isDarkTheme: Boolean,
+    accentColorOverride: Color?,
+    tabImageVector: ((Int) -> ImageVector)?,
+    tabIconContent: (@Composable (Int, Color) -> Unit)?,
+    onTabSelected: (Int) -> Unit,
+) {
+    // Keep the OS4 floating bar compact without changing the other navigation styles.
+    val floatingScale = 0.82f
+    val density = LocalDensity.current
+    val animationScope = rememberCoroutineScope()
+    val tabCount = tabs.size.coerceAtLeast(1)
+    val initialIndex = selectedIndex.intValue.coerceIn(0, tabCount - 1)
+    val dragAnimation = remember(tabCount) {
+        DampedDragAnimation(
+            animationScope = animationScope,
+            initialValue = initialIndex.toFloat(),
+            valueRange = 0f..(tabCount - 1).toFloat(),
+            visibilityThreshold = 0.001f,
+            initialScale = 1f,
+            // OS4 compresses the floating pill while it is held, then springs back on release.
+            pressedScale = 0.9f,
+            onDragStopped = {
+                val target = targetValue.fastRoundToInt().fastCoerceIn(0, tabCount - 1)
+                animateToValue(target.toFloat())
+                if (target != selectedIndex.intValue) onTabSelected(target)
+            },
+            onDrag = { size, amount ->
+                val slotWidth = size.width.toFloat() / tabCount.coerceAtLeast(1)
+                if (slotWidth > 0f) {
+                    updateValue((targetValue + amount.x / slotWidth).fastCoerceIn(0f, (tabCount - 1).toFloat()))
+                }
+            },
+            // OS4 restores the pressed scale as soon as the finger is released.
+            awaitTargetBeforeRelease = false,
+        )
+    }
+    LaunchedEffect(selectedIndex.intValue) {
+        dragAnimation.animateToValue(selectedIndex.intValue.coerceIn(0, tabCount - 1).toFloat())
+    }
+    val contentColor = if (isDarkTheme) Color.White else Color.Black
+    val selectedContentColor = accentColorOverride ?: contentColor
+    val pressedIndex = if (dragAnimation.pressProgress > 0.001f) {
+        dragAnimation.value.fastRoundToInt().fastCoerceIn(0, tabCount - 1)
+    } else {
+        -1
+    }
+    val selectedSurface = if (isDarkTheme) {
+        Color.White.copy(alpha = 0.18f)
+    } else {
+        Color.Black.copy(alpha = 0.08f)
+    }
+    val containerSurface = if (isDarkTheme) {
+        Color.Black.copy(alpha = 0.30f)
+    } else {
+        Color(0xFFF5F5F5).copy(alpha = 0.42f)
+    }
+    val fallbackSurface = if (isDarkTheme) {
+        Color(0xFF242424).copy(alpha = 0.88f)
+    } else {
+        Color(0xFFF5F5F5).copy(alpha = 0.82f)
+    }
+    val miuixBackdrop = remember(backdrop) { KyantMiuixBackdrop(backdrop) }
+    val capsule = Capsule()
+    val bloomStroke = if (isDarkTheme) {
+        MiuixHighlight.GlassStrokeSmallDark
+    } else {
+        MiuixHighlight.GlassStrokeSmallLight
+    }
+    val shadowColor = Color.Black.copy(alpha = 0.35f)
+
+    BoxWithConstraints(
+        Modifier
+            .fillMaxWidth(0.53f * floatingScale)
+            .navigationBarsPadding()
+            .padding(bottom = 8.dp * floatingScale)
+            .height(72.dp * floatingScale),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        val innerPadding = 4.dp * floatingScale
+        val innerWidthPx = with(density) { (maxWidth - innerPadding * 2).toPx() }
+        val tabWidthPx = innerWidthPx / tabCount
+        val tabWidth = with(density) { tabWidthPx.toDp() }
+        val selectedTranslation = dragAnimation.value * tabWidthPx
+        Box(
+            Modifier
+                .fillMaxSize()
+                .shadow(
+                    elevation = 6.dp,
+                    shape = capsule,
+                    clip = false,
+                    ambientColor = shadowColor,
+                    spotColor = shadowColor,
+                )
+                .then(
+                    if (advancedMaterial) {
+                        Modifier.drawMiuixBackdrop(
+                            backdrop = miuixBackdrop,
+                            shape = { capsule },
+                            effects = {
+                                // MIUIX blur is intentionally reduced by 40% for the OS4 bar.
+                                val reducedBlur = blurRadius * 0.48f
+                                textureBlurEffect(blurRadiusX = reducedBlur, blurRadiusY = reducedBlur)
+                            },
+                            highlight = { bloomStroke },
+                            onDrawSurface = {
+                                drawRect(containerSurface)
+                            },
+                        )
+                    } else Modifier.clip(capsule).background(fallbackSurface)
+                )
+        )
+        Box(Modifier.fillMaxSize().padding(innerPadding)) {
+            // Draw the selection behind labels, while a transparent overlay below captures drag.
+            Box(
+                Modifier
+                    .width(tabWidth)
+                    .fillMaxHeight()
+                    .graphicsLayer {
+                        translationX = selectedTranslation
+                        scaleX = dragAnimation.scaleX
+                        scaleY = dragAnimation.scaleY
+                    }
+                    .clip(capsule)
+                    .background(selectedSurface)
+            )
+            Row(
+                Modifier.fillMaxSize(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                tabs.forEachIndexed { index, tab ->
+                    val pressedProgress = if (pressedIndex == index) dragAnimation.pressProgress else 0f
+                    val color = if (pressedProgress > 0f) {
+                        Color.Gray
+                    } else {
+                        // OS4 uses the hover capsule, rather than a different tint, to show selection.
+                        selectedContentColor
+                    }
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .graphicsLayer {
+                                val scale = lerp(1f, 0.85f, pressedProgress)
+                                scaleX = scale
+                                scaleY = scale
+                            }
+                            .clickable(
+                                interactionSource = null,
+                                indication = null,
+                                role = Role.Tab,
+                            ) {
+                                if (index != selectedIndex.intValue) onTabSelected(index)
+                            },
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        if (showIcons) {
+                            val icon = tab.icon ?: tabImageVector?.invoke(index) ?: hyperIcon(tab.label)
+                            if (tabIconContent != null) {
+                                tabIconContent(index, color)
+                            } else {
+                                Image(icon, null, Modifier.size(28.dp * floatingScale), colorFilter = ColorFilter.tint(color))
+                            }
+                        }
+                        if (showLabels && tab.label != "+") {
+                            BasicText(
+                                tab.label,
+                                style = TextStyle(
+                                    color = color,
+                                    fontSize = if (showIcons) 15.sp * floatingScale else 17.sp * floatingScale,
+                                    fontWeight = FontWeight.Medium,
+                                    textAlign = TextAlign.Center,
+                                ),
+                                modifier = if (showIcons) Modifier.padding(top = 2.dp * floatingScale) else Modifier,
+                            )
+                        }
+                    }
+                }
+            }
+            Box(
+                Modifier
+                    .width(tabWidth)
+                    .fillMaxHeight()
+                    .graphicsLayer {
+                        translationX = selectedTranslation
+                        scaleX = dragAnimation.scaleX
+                        scaleY = dragAnimation.scaleY
+                    }
+                    .then(dragAnimation.modifier)
+            )
         }
     }
 }

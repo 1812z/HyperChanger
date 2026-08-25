@@ -47,7 +47,8 @@ internal class DampedDragAnimation(
     private val initialScale: Float,
     private val pressedScale: Float,
     private val onDragStopped: DampedDragAnimation.() -> Unit,
-    private val onDrag: DampedDragAnimation.(size: IntSize, dragAmount: Offset) -> Unit
+    private val onDrag: DampedDragAnimation.(size: IntSize, dragAmount: Offset) -> Unit,
+    private val awaitTargetBeforeRelease: Boolean = true,
 ) {
     private val valueAnimationSpec = spring(1f, 1000f, visibilityThreshold)
     private val velocityAnimationSpec = spring(0.5f, 300f, visibilityThreshold * 10f)
@@ -98,7 +99,7 @@ internal class DampedDragAnimation(
     private fun release() {
         animationScope.launch {
             withFrameNanos { }
-            if (value != targetValue) {
+            if (awaitTargetBeforeRelease && value != targetValue) {
                 val threshold = (valueRange.endInclusive - valueRange.start) * 0.025f
                 snapshotFlow { valueAnimation.value }
                     .filter { abs(it - valueAnimation.targetValue) < threshold }

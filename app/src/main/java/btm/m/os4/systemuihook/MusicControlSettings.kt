@@ -15,6 +15,10 @@ class MusicControlSettingsStore(context: Context) {
     var apps: Set<String> = local.getStringSet(MUSIC_CONTROLS_WHITELIST_APPS, emptySet()).orEmpty()
         private set
 
+    fun reload() {
+        apps = local.getStringSet(MUSIC_CONTROLS_WHITELIST_APPS, emptySet()).orEmpty()
+    }
+
     fun syncRemote(service: XposedService) {
         val remote = service.getRemotePreferences(REMOTE_PREFERENCE_GROUP)
         val remoteApps = remote.getStringSet(MUSIC_CONTROLS_WHITELIST_APPS, null)

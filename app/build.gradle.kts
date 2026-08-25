@@ -16,8 +16,8 @@ android {
         applicationId = "btm.m.os4.systemuihook"
         minSdk = 33
         targetSdk = 35
-        versionCode = 10000
-        versionName = "1.0.0 Beta 2 (10000-Beta-2)"
+        versionCode = 10001
+        versionName = "1.0.1"
     }
 
     signingConfigs {
@@ -71,6 +71,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended:1.7.8")
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("com.google.zxing:core:3.5.3")
+    implementation("io.github.proify.lyricon:subscriber:0.1.70")
 
     compileOnly("io.github.libxposed:api:102.0.0")
     implementation("io.github.libxposed:service:102.0.0")

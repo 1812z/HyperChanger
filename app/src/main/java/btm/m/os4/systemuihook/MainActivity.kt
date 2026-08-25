@@ -44,8 +44,6 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Apps
-import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.produceState
@@ -107,7 +105,10 @@ import top.yukonga.miuix.kmp.basic.*
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+import top.yukonga.miuix.kmp.icon.extended.All
 import top.yukonga.miuix.kmp.icon.extended.MoreCircle
+import top.yukonga.miuix.kmp.icon.extended.Refresh
+import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.preference.*
 import top.yukonga.miuix.kmp.shader.isRuntimeShaderSupported
@@ -116,6 +117,9 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.security.SecureRandom
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.time.Year
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -137,6 +141,20 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class Tab(val title: String) { CATEGORY("\u5206\u7c7b"), SETTINGS("\u8bbe\u7f6e") }
+
+private val modulePresetRandom = SecureRandom()
+private const val MODULE_PRESET_RANDOM_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+private fun defaultModulePresetFileName(): String {
+    val timestamp = SimpleDateFormat("yyyyMMddHHmm", Locale.US).format(Date())
+    val suffix = buildString {
+        repeat(6) {
+            append(MODULE_PRESET_RANDOM_ALPHABET[modulePresetRandom.nextInt(MODULE_PRESET_RANDOM_ALPHABET.length)])
+        }
+    }
+    return "HyperChanger_Presets_${timestamp}_${suffix}.json"
+}
+
 private enum class PageId {
     SHADE,
     SHADE_PRESETS,
@@ -145,7 +163,7 @@ private enum class PageId {
     SHADE_NOTIFICATION_BACKGROUND,
     SHADE_CONTROL_CENTER_BACKGROUND,
     ISLAND, STATUS, CONTROL, LOCK, RASTER_WALLPAPER, SUPER_XIAOAI, CAMERA, SYSTEM_SETTINGS, DEVICE_PROFILE,
-    SETTINGS_APPEARANCE_HOME, SETTINGS_APPEARANCE_DEVICE, ABOUT, DONATE, OPEN,
+    SETTINGS_APPEARANCE_HOME, SETTINGS_APPEARANCE_DEVICE, TUTORIAL_DEVICE_CARD, ABOUT, DONATE, OPEN,
     REAR_SCREEN, REAR_MUSIC_APPS,
 }
 
@@ -186,7 +204,13 @@ private fun Root(
                 when (slot) {
                     APPEARANCE_SLOT_HOME -> it.copy(homeMime = mime, homeVersion = target.lastModified())
                     APPEARANCE_SLOT_DEVICE -> it.copy(deviceMime = mime, deviceVersion = target.lastModified())
-                    else -> it.copy(logoMime = mime, logoVersion = target.lastModified())
+                    APPEARANCE_SLOT_DEVICE_IMAGE -> it.copy(tutorialCardImageMime = mime, tutorialCardImageVersion = target.lastModified())
+                    APPEARANCE_SLOT_CUSTOM_DEVICE_LOGO -> it.copy(tutorialCardLogoMime = mime, tutorialCardLogoVersion = target.lastModified())
+                    APPEARANCE_SLOT_STYLE1_UPDATE_BACKGROUND -> it.copy(tutorialCardBackgroundMime = mime, tutorialCardBackgroundVersion = target.lastModified())
+                    APPEARANCE_SLOT_STYLE2_DEVICE_IMAGE -> it.copy(style2ImageMime = mime, style2ImageVersion = target.lastModified())
+                    APPEARANCE_SLOT_STYLE2_CUSTOM_DEVICE_LOGO -> it.copy(style2LogoMime = mime, style2LogoVersion = target.lastModified())
+                    APPEARANCE_SLOT_STYLE2_UPDATE_BACKGROUND -> it.copy(style2BackgroundMime = mime, style2BackgroundVersion = target.lastModified())
+                    else -> it.copy(logoMime = mime, logoVersion = target.lastModified(), logoMode = LOGO_MODE_KEEP_ADVANCED_MATERIAL)
                 }
             }
             appearance = appearances.settings
@@ -200,7 +224,13 @@ private fun Root(
                 when (slot) {
                     APPEARANCE_SLOT_HOME -> it.copy(homeEnabled = false, homeMime = "", homeVersion = System.currentTimeMillis())
                     APPEARANCE_SLOT_DEVICE -> it.copy(deviceEnabled = false, deviceMime = "", deviceVersion = System.currentTimeMillis())
-                    else -> it.copy(logoMime = "", logoVersion = System.currentTimeMillis())
+                    APPEARANCE_SLOT_DEVICE_IMAGE -> it.copy(tutorialCardEnabled = false, tutorialCardImageMime = "", tutorialCardImageVersion = System.currentTimeMillis())
+                    APPEARANCE_SLOT_CUSTOM_DEVICE_LOGO -> it.copy(tutorialCardLogoMime = "", tutorialCardLogoVersion = System.currentTimeMillis())
+                    APPEARANCE_SLOT_STYLE1_UPDATE_BACKGROUND -> it.copy(tutorialCardBackgroundMime = "", tutorialCardBackgroundVersion = System.currentTimeMillis())
+                    APPEARANCE_SLOT_STYLE2_DEVICE_IMAGE -> it.copy(style2ImageMime = "", style2ImageVersion = System.currentTimeMillis())
+                    APPEARANCE_SLOT_STYLE2_CUSTOM_DEVICE_LOGO -> it.copy(style2LogoMime = "", style2LogoVersion = System.currentTimeMillis())
+                    APPEARANCE_SLOT_STYLE2_UPDATE_BACKGROUND -> it.copy(style2BackgroundMime = "", style2BackgroundVersion = System.currentTimeMillis())
+                    else -> it.copy(logoMime = "", logoVersion = System.currentTimeMillis(), logoMode = LOGO_MODE_SYSTEM)
                 }
             }
             appearance = appearances.settings
@@ -209,8 +239,18 @@ private fun Root(
     }
     val pickAppearanceHome = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { importAppearance(APPEARANCE_SLOT_HOME, it) }
     val pickAppearanceDevice = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { importAppearance(APPEARANCE_SLOT_DEVICE, it) }
+    val pickTutorialDeviceImage = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { importAppearance(APPEARANCE_SLOT_DEVICE_IMAGE, it) }
+    val pickStyle2DeviceImage = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { importAppearance(APPEARANCE_SLOT_STYLE2_DEVICE_IMAGE, it) }
+    val pickStyle2UpdateBackground = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { importAppearance(APPEARANCE_SLOT_STYLE2_UPDATE_BACKGROUND, it) }
+    val pickStyle1UpdateBackground = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { importAppearance(APPEARANCE_SLOT_STYLE1_UPDATE_BACKGROUND, it) }
     val pickAppearanceLogo = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) importAppearance(APPEARANCE_SLOT_LOGO, result.data?.data)
+    }
+    val pickCustomDeviceLogo = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) importAppearance(APPEARANCE_SLOT_CUSTOM_DEVICE_LOGO, result.data?.data)
+    }
+    val pickStyle2DeviceLogo = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) importAppearance(APPEARANCE_SLOT_STYLE2_CUSTOM_DEVICE_LOGO, result.data?.data)
     }
     val pickRasterImages = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
@@ -230,6 +270,7 @@ private fun Root(
         if (selected.size > 4) Toast.makeText(context, "最多选择 4 个素材", Toast.LENGTH_SHORT).show()
     }
     var pendingJsonExport by remember { mutableStateOf<ShadePreset?>(null) }
+    var pendingModulePresetExport by remember { mutableStateOf<String?>(null) }
     var qrShareRequest by remember { mutableStateOf<QrShareRequest?>(null) }
     var pendingQrSave by remember { mutableStateOf<QrShareRequest?>(null) }
     val exportPreset = rememberLauncherForActivityResult(
@@ -266,6 +307,49 @@ private fun Root(
             context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
                 ?: error("无法读取文件")
         }.onSuccess(::importPresetPayload).onFailure {
+            Toast.makeText(context, "导入失败", Toast.LENGTH_SHORT).show()
+        }
+    }
+    val exportModulePreset = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        val payload = pendingModulePresetExport ?: return@rememberLauncherForActivityResult
+        pendingModulePresetExport = null
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(payload) }
+                ?: error("无法写入文件")
+        }.onSuccess {
+            Toast.makeText(context, "预设已导出", Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show()
+        }
+    }
+    fun importModulePresetPayload(payload: String) {
+        runCatching {
+            ModulePresetCodec.import(context, service, payload)
+            hooks.reload()
+            cameras.reload()
+            deviceProfiles.reload()
+            appearances.reload()
+            musicStore.reload()
+            settings = hooks.settings
+            cameraSettings = cameras.settings
+            deviceProfile = deviceProfiles.settings
+            appearance = appearances.settings
+            musicWhitelist = musicStore.apps
+        }.onSuccess {
+            Toast.makeText(context, "预设已导入", Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            Toast.makeText(context, "导入失败", Toast.LENGTH_SHORT).show()
+        }
+    }
+    val importModulePreset = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                ?: error("无法读取文件")
+        }.onSuccess(::importModulePresetPayload).onFailure {
             Toast.makeText(context, "导入失败", Toast.LENGTH_SHORT).show()
         }
     }
@@ -335,6 +419,11 @@ private fun Root(
                 musicStore.update(service, next)
                 musicWhitelist = musicStore.apps
             },
+            onImportModulePreset = { importModulePreset.launch(arrayOf("application/json", "text/json", "text/plain")) },
+            onExportModulePreset = {
+                pendingModulePresetExport = ModulePresetCodec.export(context)
+                exportModulePreset.launch(defaultModulePresetFileName())
+            },
             presetActions = ShadePresetActions(
                 userPresets = userPresets,
                 saveUserPreset = { name ->
@@ -375,12 +464,35 @@ private fun Root(
             onPickAppearanceDevice = { pickAppearanceDevice.launch(arrayOf("image/*", "video/*", "video/mp4", "video/webm")) },
             onClearAppearanceHome = { clearAppearance(APPEARANCE_SLOT_HOME) },
             onClearAppearanceDevice = { clearAppearance(APPEARANCE_SLOT_DEVICE) },
+            onPickTutorialDeviceImage = { pickTutorialDeviceImage.launch(arrayOf("image/*")) },
+            onClearTutorialDeviceImage = { clearAppearance(APPEARANCE_SLOT_DEVICE_IMAGE) },
+            onPickStyle2DeviceImage = { pickStyle2DeviceImage.launch(arrayOf("image/*")) },
+            onClearStyle2DeviceImage = { clearAppearance(APPEARANCE_SLOT_STYLE2_DEVICE_IMAGE) },
+            onPickStyle2UpdateBackground = { pickStyle2UpdateBackground.launch(arrayOf("image/*")) },
+            onClearStyle2UpdateBackground = { clearAppearance(APPEARANCE_SLOT_STYLE2_UPDATE_BACKGROUND) },
+            onPickStyle1UpdateBackground = { pickStyle1UpdateBackground.launch(arrayOf("image/*")) },
+            onClearStyle1UpdateBackground = { clearAppearance(APPEARANCE_SLOT_STYLE1_UPDATE_BACKGROUND) },
+            onPickCustomDeviceLogo = {
+                pickCustomDeviceLogo.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                })
+            },
+            onClearCustomDeviceLogo = { clearAppearance(APPEARANCE_SLOT_CUSTOM_DEVICE_LOGO) },
+            onPickStyle2DeviceLogo = {
+                pickStyle2DeviceLogo.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                })
+            },
+            onClearStyle2DeviceLogo = { clearAppearance(APPEARANCE_SLOT_STYLE2_CUSTOM_DEVICE_LOGO) },
             onPickAppearanceLogo = {
                 pickAppearanceLogo.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = "*/*"
                 })
             },
+            onClearAppearanceLogo = { clearAppearance(APPEARANCE_SLOT_LOGO) },
         )
         qrShareRequest?.let { request ->
             QrShareDialog(
@@ -423,6 +535,8 @@ private fun Shell(
     updateDeviceProfile: ((DeviceProfileSettings) -> DeviceProfileSettings) -> Unit,
     updateAppearance: ((SettingsAppearanceSettings) -> SettingsAppearanceSettings) -> Unit,
     updateMusicWhitelist: (Set<String>) -> Unit,
+    onImportModulePreset: () -> Unit,
+    onExportModulePreset: () -> Unit,
     presetActions: ShadePresetActions,
     onPickRasterImages: () -> Unit,
     onApplyRasterWallpaper: () -> Unit,
@@ -430,7 +544,20 @@ private fun Shell(
     onPickAppearanceDevice: () -> Unit,
     onClearAppearanceHome: () -> Unit,
     onClearAppearanceDevice: () -> Unit,
+    onPickTutorialDeviceImage: () -> Unit,
+    onClearTutorialDeviceImage: () -> Unit,
+    onPickStyle1UpdateBackground: () -> Unit,
+    onClearStyle1UpdateBackground: () -> Unit,
+    onPickStyle2DeviceImage: () -> Unit,
+    onClearStyle2DeviceImage: () -> Unit,
+    onPickStyle2UpdateBackground: () -> Unit,
+    onClearStyle2UpdateBackground: () -> Unit,
+    onPickCustomDeviceLogo: () -> Unit,
+    onClearCustomDeviceLogo: () -> Unit,
+    onPickStyle2DeviceLogo: () -> Unit,
+    onClearStyle2DeviceLogo: () -> Unit,
     onPickAppearanceLogo: () -> Unit,
+    onClearAppearanceLogo: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(Tab.CATEGORY) }
     val pageStack = remember { mutableStateListOf<PageId>() }
@@ -475,7 +602,14 @@ private fun Shell(
         Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
             when (tab) {
                 Tab.CATEGORY -> CategoryHome(openRootPage)
-                Tab.SETTINGS -> SettingsHome(settings, service != null, update, openRootPage)
+                Tab.SETTINGS -> SettingsHome(
+                    settings,
+                    service != null,
+                    update,
+                    openRootPage,
+                    onImportModulePreset,
+                    onExportModulePreset,
+                )
             }
         }
         BottomBar(tab, { tab = it }, settings, backdrop, Modifier.align(Alignment.BottomCenter))
@@ -508,7 +642,20 @@ private fun Shell(
                             onPickAppearanceDevice = onPickAppearanceDevice,
                             onClearAppearanceHome = onClearAppearanceHome,
                             onClearAppearanceDevice = onClearAppearanceDevice,
+                            onPickTutorialDeviceImage = onPickTutorialDeviceImage,
+                            onClearTutorialDeviceImage = onClearTutorialDeviceImage,
+                            onPickStyle1UpdateBackground = onPickStyle1UpdateBackground,
+                            onClearStyle1UpdateBackground = onClearStyle1UpdateBackground,
+                            onPickStyle2DeviceImage = onPickStyle2DeviceImage,
+                            onClearStyle2DeviceImage = onClearStyle2DeviceImage,
+                            onPickStyle2UpdateBackground = onPickStyle2UpdateBackground,
+                            onClearStyle2UpdateBackground = onClearStyle2UpdateBackground,
+                            onPickCustomDeviceLogo = onPickCustomDeviceLogo,
+                            onClearCustomDeviceLogo = onClearCustomDeviceLogo,
+                            onPickStyle2DeviceLogo = onPickStyle2DeviceLogo,
+                            onClearStyle2DeviceLogo = onClearStyle2DeviceLogo,
                             onPickAppearanceLogo = onPickAppearanceLogo,
+                            onClearAppearanceLogo = onClearAppearanceLogo,
                         )
                     }
                 }
@@ -540,21 +687,14 @@ private fun BottomBar(
             tabs = tabs,
             selectedIndex = index,
             blurRadius = if (settings.navigationStyle == "liquid_glass") 3 else 18,
-            labelMode = LabelMode.ICON_AND_TEXT.preferenceValue,
+            labelMode = settings.navigationLabelMode,
             navigationStyle = settings.navigationStyle,
             advancedMaterial = true,
             colorMode = settings.themeMode,
             liquidBottomSpacingDp = 0,
             onHostPreDraw = {},
             backdropOverride = backdrop,
-            tabIconContent = { i, color ->
-                Image(
-                    imageVector = if (i == Tab.CATEGORY.ordinal) Icons.Rounded.Apps else Icons.Rounded.Settings,
-                    contentDescription = tabs[i].label,
-                    modifier = Modifier.size(24.dp),
-                    colorFilter = ColorFilter.tint(color)
-                )
-            }
+            tabImageVector = { i -> if (i == Tab.CATEGORY.ordinal) MiuixIcons.Regular.All else MiuixIcons.Regular.Settings }
         )
     }
 }
@@ -629,7 +769,7 @@ private fun RearScreen(
     onSelectedPackagesChange: (Set<String>) -> Unit,
     open: (PageId) -> Unit,
     back: () -> Unit,
-) = AppPage("\u80cc\u5c4f", back) { padding, scroll ->
+) = AppPage("\u80cc\u5c4f", back, restartScopes = setOf(ScopeApplication.SUBSCREEN_CENTER)) { padding, scroll ->
     val apps = rememberRearApps()
     AppList(padding, scroll, 28) {
         item {
@@ -852,7 +992,9 @@ private fun SettingsHome(
     settings: HookSettings,
     online: Boolean,
     update: ((HookSettings) -> HookSettings) -> Unit,
-    open: (PageId) -> Unit
+    open: (PageId) -> Unit,
+    onImportModulePreset: () -> Unit,
+    onExportModulePreset: () -> Unit,
 ) = AppPage("\u8bbe\u7f6e") { padding, scroll ->
     val context = LocalContext.current
     var predictiveProgress by remember(settings.predictiveBackProgress) { mutableFloatStateOf(settings.predictiveBackProgress.toFloat()) }
@@ -877,6 +1019,12 @@ private fun SettingsHome(
                     selectedIndex = listOf("hyper_os", "hyper_os_floating", "liquid_glass").indexOf(settings.navigationStyle).coerceAtLeast(0),
                     onSelectedIndexChange = { i -> update { it.copy(navigationStyle = listOf("hyper_os", "hyper_os_floating", "liquid_glass")[i]) } }
                 )
+                OverlayDropdownPreference(
+                    title = "\u5e95\u90e8\u5bfc\u822a\u680f\u6807\u7b7e\u663e\u793a\u65b9\u5f0f",
+                    items = LabelMode.entries.map { it.displayName },
+                    selectedIndex = LabelMode.entries.indexOfFirst { it.preferenceValue == settings.navigationLabelMode }.coerceAtLeast(0),
+                    onSelectedIndexChange = { i -> update { it.copy(navigationLabelMode = LabelMode.entries[i].preferenceValue) } },
+                )
                 SwitchPreference(
                     title = "\u9884\u6d4b\u6027\u8fd4\u56de\u52a8\u753b",
                     checked = settings.predictiveBackEnabled,
@@ -893,6 +1041,12 @@ private fun SettingsHome(
                         steps = 89
                     )
                 }
+            }
+        }
+        item {
+            Group("\u5e94\u7528\u9884\u8bbe") {
+                ArrowPreference(title = "\u5bfc\u5165\u9884\u8bbe", onClick = onImportModulePreset)
+                ArrowPreference(title = "\u5bfc\u51fa\u9884\u8bbe", onClick = onExportModulePreset)
             }
         }
         item {
@@ -919,6 +1073,7 @@ private fun RestartScopeDialog(
     show: Boolean,
     onDismiss: () -> Unit,
     onRestart: (Set<ScopeApplication>) -> Unit,
+    availableTargets: Set<ScopeApplication> = ScopeApplication.entries.toSet(),
 ) {
     var selectedTargets by remember(show) {
         mutableStateOf<Set<ScopeApplication>>(emptySet())
@@ -945,6 +1100,7 @@ private fun RestartScopeDialog(
             ScopeRestartCheckboxes(
                 selectedTargets = selectedTargets,
                 onSelectedTargetsChange = { selectedTargets = it },
+                availableTargets = availableTargets,
             )
             Spacer(Modifier.height(8.dp))
             Row(
@@ -967,8 +1123,9 @@ private fun RestartScopeDialog(
 private fun ScopeRestartCheckboxes(
     selectedTargets: Set<ScopeApplication>,
     onSelectedTargetsChange: (Set<ScopeApplication>) -> Unit,
+    availableTargets: Set<ScopeApplication> = ScopeApplication.entries.toSet(),
 ) {
-    ScopeApplication.entries.forEach { target ->
+    ScopeApplication.entries.filter { it in availableTargets }.forEach { target ->
         val toggle = {
             onSelectedTargetsChange(
                 if (target in selectedTargets) selectedTargets - target else selectedTargets + target,
@@ -999,8 +1156,9 @@ private fun SystemSettings(
     updateAppearance: ((SettingsAppearanceSettings) -> SettingsAppearanceSettings) -> Unit,
     open: (PageId) -> Unit,
     onPickLogo: () -> Unit,
+    onClearLogo: () -> Unit,
     back: () -> Unit,
-) = AppPage("系统设置", back) { padding, scroll ->
+) = AppPage("系统设置", back, restartScopes = setOf(ScopeApplication.SETTINGS)) { padding, scroll ->
     AppList(padding, scroll) {
         item {
             Group("设置应用") {
@@ -1021,17 +1179,25 @@ private fun SystemSettings(
             Card(Modifier.fillMaxWidth()) {
                 ArrowPreference(title = "自定义设置主界面背景图", onClick = { open(PageId.SETTINGS_APPEARANCE_HOME) })
                 ArrowPreference(title = "自定义我的设备界面背景图", onClick = { open(PageId.SETTINGS_APPEARANCE_DEVICE) })
-                OverlayDropdownPreference(
-                    title = "自定义LOGO",
-                    items = listOf("系统默认", "不保留高级材质", "保留高级材质（需要导入SVG/XML）"),
-                    selectedIndex = appearance.logoMode,
-                    onSelectedIndexChange = { index -> updateAppearance { it.copy(logoMode = index) } },
-                )
-                if (appearance.logoMode != LOGO_MODE_SYSTEM) {
+                ArrowPreference(title = "自定义我的设备界面", onClick = { open(PageId.TUTORIAL_DEVICE_CARD) })
+                if (appearance.deviceInterfaceStyle == DEVICE_INTERFACE_STYLE_SYSTEM) {
+                    OverlayDropdownPreference(
+                        title = "自定义LOGO",
+                        items = listOf("系统默认", "不保留高级材质", "保留高级材质（需要导入SVG/XML）"),
+                        selectedIndex = appearance.logoMode,
+                        onSelectedIndexChange = { index -> updateAppearance { it.copy(logoMode = index) } },
+                    )
+                }
+                if (appearance.deviceInterfaceStyle == DEVICE_INTERFACE_STYLE_SYSTEM && appearance.logoMode != LOGO_MODE_SYSTEM) {
                     ArrowPreference(
                         title = "导入LOGO",
                         summary = appearance.logoMime.ifBlank { "未导入" },
                         onClick = onPickLogo,
+                    )
+                    ArrowPreference(
+                        title = "清除LOGO",
+                        summary = if (appearance.logoMime.isBlank()) "无LOGO" else "已导入",
+                        onClick = onClearLogo,
                     )
                     SliderPreference(
                         value = appearance.logoScale.toFloat(),
@@ -1102,6 +1268,437 @@ private fun DeviceProfileEditor(
             item { DeviceProfileField(label, value) { next -> update { setters[index](it, next) } } }
         }
     }
+}
+
+@Composable
+private fun TutorialDeviceCardSettings(
+    appearance: SettingsAppearanceSettings,
+    update: ((SettingsAppearanceSettings) -> SettingsAppearanceSettings) -> Unit,
+    onPickSystemLogo: () -> Unit,
+    onClearSystemLogo: () -> Unit,
+    onPickStyle1Image: () -> Unit,
+    onClearStyle1Image: () -> Unit,
+    onPickStyle1Logo: () -> Unit,
+    onClearStyle1Logo: () -> Unit,
+    onPickStyle1Background: () -> Unit,
+    onClearStyle1Background: () -> Unit,
+    onPickStyle2Image: () -> Unit,
+    onClearStyle2Image: () -> Unit,
+    onPickStyle2Logo: () -> Unit,
+    onClearStyle2Logo: () -> Unit,
+    onPickStyle2Background: () -> Unit,
+    onClearStyle2Background: () -> Unit,
+    back: () -> Unit,
+) = AppPage("自定义我的设备界面", back, restartScopes = setOf(ScopeApplication.SETTINGS)) { padding, scroll ->
+    val style = appearance.deviceInterfaceStyle.coerceIn(DEVICE_INTERFACE_STYLE_SYSTEM, DEVICE_INTERFACE_STYLE_TWO)
+    val selectStyle: (Int) -> Unit = { selected ->
+            update {
+            it.copy(
+                deviceInterfaceStyle = selected,
+                tutorialCardEnabled = selected == DEVICE_INTERFACE_STYLE_ONE,
+                tutorialCardInfoCardsEnabled = selected == DEVICE_INTERFACE_STYLE_ONE,
+            )
+        }
+    }
+    AppList(padding, scroll) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                OverlayDropdownPreference(
+                    title = "我的设备界面样式",
+                    items = listOf("系统默认", "样式1 (来自酷安@Mr_Bocchi)", "样式2"),
+                    selectedIndex = style,
+                    onSelectedIndexChange = selectStyle,
+                )
+            }
+        }
+        if (style == DEVICE_INTERFACE_STYLE_SYSTEM) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    ArrowPreference(
+                        title = "导入LOGO",
+                        summary = appearance.logoMime.ifBlank { "未导入" },
+                        onClick = onPickSystemLogo,
+                    )
+                    ArrowPreference(
+                        title = "清除LOGO",
+                        summary = if (appearance.logoMime.isBlank()) "无LOGO" else "已导入",
+                        onClick = onClearSystemLogo,
+                    )
+                }
+            }
+        }
+        if (style == DEVICE_INTERFACE_STYLE_ONE) {
+            item {
+                Group("机型图片") {
+                    ArrowPreference(
+                        title = "导入机型图片",
+                        summary = appearance.tutorialCardImageMime.ifBlank { "未导入" },
+                        onClick = onPickStyle1Image,
+                    )
+                    ArrowPreference(
+                        title = "清除机型图片",
+                        summary = if (appearance.tutorialCardImageMime.isBlank()) "无图片" else "已导入",
+                        onClick = onClearStyle1Image,
+                    )
+                    SliderPreference(
+                        value = appearance.tutorialCardImageScale.toFloat(),
+                        onValueChange = { value -> update { it.copy(tutorialCardImageScale = value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "机型图片缩放",
+                        valueText = "${appearance.tutorialCardImageScale}%",
+                        valueRange = 40f..200f,
+                        steps = 159,
+                    )
+                    SliderPreference(
+                        value = appearance.tutorialCardImageLogoSpacing.toFloat(),
+                        onValueChange = { value -> update { it.copy(tutorialCardImageLogoSpacing = value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "机型图片与LOGO间距",
+                        valueText = "${appearance.tutorialCardImageLogoSpacing}%",
+                        valueRange = -120f..120f,
+                        steps = 239,
+                    )
+                }
+            }
+            item {
+                Group("背景图片") {
+                    ArrowPreference(
+                        title = "导入背景图片",
+                        summary = appearance.tutorialCardBackgroundMime.ifBlank { "未导入" },
+                        onClick = onPickStyle1Background,
+                    )
+                    ArrowPreference(
+                        title = "清除背景图片",
+                        summary = if (appearance.tutorialCardBackgroundMime.isBlank()) "无图片" else "已导入",
+                        onClick = onClearStyle1Background,
+                    )
+                SliderPreference(
+                    value = appearance.tutorialCardBackgroundBlur,
+                    onValueChange = { value -> update { it.copy(tutorialCardBackgroundBlur = value) } },
+                    onValueChangeFinished = {},
+                    title = "背景图片模糊度",
+                    valueText = String.format(Locale.US, "%.2fdp", appearance.tutorialCardBackgroundBlur),
+                    valueRange = 0f..25f,
+                    steps = 2499,
+                    enabled = true,
+                )
+                SliderPreference(
+                    value = appearance.tutorialCardBackgroundHorizontalOffset.toFloat(),
+                    onValueChange = { value -> update { it.copy(tutorialCardBackgroundHorizontalOffset = value.toInt()) } },
+                    onValueChangeFinished = {},
+                    title = "背景图片左右偏移",
+                    valueText = "${appearance.tutorialCardBackgroundHorizontalOffset}%",
+                    valueRange = -120f..120f,
+                    steps = 239,
+                    enabled = true,
+                )
+                SliderPreference(
+                    value = appearance.tutorialCardBackgroundVerticalOffset.toFloat(),
+                    onValueChange = { value -> update { it.copy(tutorialCardBackgroundVerticalOffset = value.toInt()) } },
+                    onValueChangeFinished = {},
+                    title = "背景图片上下偏移",
+                    valueText = "${appearance.tutorialCardBackgroundVerticalOffset}%",
+                    valueRange = -120f..120f,
+                    steps = 239,
+                    enabled = true,
+                )
+                SliderPreference(
+                    value = appearance.tutorialCardBackgroundScale.toFloat(),
+                    onValueChange = { value -> update { it.copy(tutorialCardBackgroundScale = value.toInt()) } },
+                    onValueChangeFinished = {},
+                    title = "背景图片缩放",
+                    valueText = "${appearance.tutorialCardBackgroundScale}%",
+                    valueRange = 40f..200f,
+                    steps = 159,
+                    enabled = true,
+                )
+                }
+            }
+            item {
+                Group("LOGO") {
+                    ArrowPreference(
+                        title = "导入LOGO",
+                        summary = appearance.tutorialCardLogoMime.ifBlank { "未导入" },
+                        onClick = onPickStyle1Logo,
+                    )
+                    ArrowPreference(
+                        title = "清除LOGO",
+                        summary = if (appearance.tutorialCardLogoMime.isBlank()) "无LOGO" else "已导入",
+                        onClick = onClearStyle1Logo,
+                    )
+                    SliderPreference(
+                        value = appearance.tutorialCardLogoScale.toFloat(),
+                        onValueChange = { value -> update { it.copy(tutorialCardLogoScale = value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "LOGO缩放",
+                        valueText = "${appearance.tutorialCardLogoScale}%",
+                        valueRange = 40f..200f,
+                        steps = 159,
+                    )
+                    SliderPreference(
+                        value = appearance.tutorialCardLogoVerticalOffset.toFloat(),
+                        onValueChange = { value -> update { it.copy(tutorialCardLogoVerticalOffset = value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "LOGO上下偏移",
+                        valueText = "${appearance.tutorialCardLogoVerticalOffset}%",
+                        valueRange = -120f..120f,
+                        steps = 239,
+                    )
+                }
+            }
+            item {
+                Group("底部标识") {
+                    SliderPreference(
+                        value = appearance.tutorialCardTextSpacing.toFloat(),
+                        onValueChange = { value -> update { it.copy(tutorialCardTextSpacing = value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "底部Logo与文案间距",
+                        valueText = "${appearance.tutorialCardTextSpacing}%",
+                        valueRange = -120f..120f,
+                        steps = 239,
+                    )
+                    TutorialCardTextField("署名", appearance.tutorialCardAuthor) { value -> update { it.copy(tutorialCardAuthor = value) } }
+                }
+            }
+        }
+        if (style == DEVICE_INTERFACE_STYLE_TWO) {
+            item {
+                Group("机型图片") {
+                    ArrowPreference(
+                        title = "导入机型图片",
+                        summary = appearance.style2ImageMime.ifBlank { "未导入" },
+                        onClick = onPickStyle2Image,
+                    )
+                    ArrowPreference(
+                        title = "清除机型图片",
+                        summary = if (appearance.style2ImageMime.isBlank()) "无图片" else "已导入",
+                        onClick = onClearStyle2Image,
+                    )
+                    SliderPreference(
+                        value = appearance.style2ImageScale.toFloat(),
+                        onValueChange = { value -> update { it.copy(style2ImageScale = value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "机型图片缩放",
+                        valueText = "${appearance.style2ImageScale}%",
+                        valueRange = 40f..200f,
+                        steps = 159,
+                    )
+                }
+            }
+            item {
+                Group("背景图片") {
+                    ArrowPreference(
+                        title = "导入背景图片",
+                        summary = appearance.style2BackgroundMime.ifBlank { "未导入" },
+                        onClick = onPickStyle2Background,
+                    )
+                    ArrowPreference(
+                        title = "清除背景图片",
+                        summary = if (appearance.style2BackgroundMime.isBlank()) "无背景图" else "已导入",
+                        onClick = onClearStyle2Background,
+                    )
+                    SliderPreference(
+                        value = appearance.style2BackgroundBlur,
+                        onValueChange = { value -> update { it.copy(style2BackgroundBlur = value) } },
+                        onValueChangeFinished = {},
+                        title = "背景图片模糊度",
+                        valueText = String.format(Locale.US, "%.2fdp", appearance.style2BackgroundBlur),
+                        valueRange = 0f..25f,
+                        steps = 2499,
+                    )
+                    SliderPreference(
+                        value = appearance.style2BackgroundHorizontalOffset.toFloat(),
+                        onValueChange = { value -> update { it.copy(style2BackgroundHorizontalOffset = value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "背景图片左右偏移",
+                        valueText = "${appearance.style2BackgroundHorizontalOffset}%",
+                        valueRange = -120f..120f,
+                        steps = 239,
+                    )
+                    SliderPreference(
+                        value = appearance.style2BackgroundVerticalOffset.toFloat(),
+                        onValueChange = { value -> update { it.copy(style2BackgroundVerticalOffset = value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "背景图片上下偏移",
+                        valueText = "${appearance.style2BackgroundVerticalOffset}%",
+                        valueRange = -120f..120f,
+                        steps = 239,
+                    )
+                    SliderPreference(
+                        value = appearance.style2BackgroundScale.toFloat(),
+                        onValueChange = { value -> update { it.copy(style2BackgroundScale = value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "背景图片缩放",
+                        valueText = "${appearance.style2BackgroundScale}%",
+                        valueRange = 40f..200f,
+                        steps = 159,
+                    )
+                }
+            }
+            item {
+                Group("LOGO与版本号") {
+                    ArrowPreference(
+                        title = "导入LOGO",
+                        summary = appearance.style2LogoMime.ifBlank { "未导入" },
+                        onClick = onPickStyle2Logo,
+                    )
+                    ArrowPreference(
+                        title = "清除LOGO",
+                        summary = if (appearance.style2LogoMime.isBlank()) "无LOGO" else "已导入",
+                        onClick = onClearStyle2Logo,
+                    )
+                    OverlayDropdownPreference(
+                        title = "LOGO与版本号对齐方式",
+                        items = listOf("左对齐", "居中对齐", "右对齐"),
+                        selectedIndex = appearance.style2LogoAlignment.coerceIn(0, 2),
+                        onSelectedIndexChange = { value -> update { it.copy(style2LogoAlignment = value) } },
+                    )
+                    SliderPreference(
+                        value = appearance.style2LogoVersionSpacing.toFloat(),
+                        onValueChange = { value -> update { it.copy(style2LogoVersionSpacing = value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "LOGO与版本号行间距",
+                        valueText = "${appearance.style2LogoVersionSpacing}%",
+                        valueRange = -120f..120f,
+                        steps = 239,
+                    )
+                    SliderPreference(
+                        value = appearance.style2LogoHorizontalOffsetForAlignment().toFloat(),
+                        onValueChange = { value -> update { current -> current.withStyle2LogoHorizontalOffset(current.style2LogoAlignment, value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "LOGO与版本号左右偏移",
+                        valueText = "${appearance.style2LogoHorizontalOffsetForAlignment()}%",
+                        valueRange = -120f..120f,
+                        steps = 239,
+                    )
+                    SliderPreference(
+                        value = appearance.style2LogoVerticalOffsetForAlignment().toFloat(),
+                        onValueChange = { value -> update { current -> current.withStyle2LogoVerticalOffset(current.style2LogoAlignment, value.toInt()) } },
+                        onValueChangeFinished = {},
+                        title = "LOGO与版本号上下偏移",
+                        valueText = "${appearance.style2LogoVerticalOffsetForAlignment()}%",
+                        valueRange = -120f..120f,
+                        steps = 239,
+                    )
+                }
+            }
+            item {
+                Group("文案") {
+                    SwitchPreference(
+                        title = "显示自定义文案",
+                        checked = appearance.style2TextEnabled,
+                        onCheckedChange = { value -> update { it.copy(style2TextEnabled = value) } },
+                    )
+                    if (appearance.style2TextEnabled) {
+                        TutorialCardTextField("文案", appearance.style2Text) { value -> update { it.copy(style2Text = value) } }
+                        SwitchPreference(
+                            title = "独立于LOGO和版本号",
+                            checked = appearance.style2TextIndependent,
+                            onCheckedChange = { value -> update { it.copy(style2TextIndependent = value) } },
+                        )
+                        SliderPreference(
+                            value = appearance.style2TextScale.toFloat(),
+                            onValueChange = { value -> update { it.copy(style2TextScale = value.toInt()) } },
+                            onValueChangeFinished = {},
+                            title = "文案缩放",
+                            valueText = "${appearance.style2TextScale}%",
+                            valueRange = 40f..200f,
+                            steps = 159,
+                        )
+                        if (!appearance.style2TextIndependent) {
+                            OverlayDropdownPreference(
+                                title = "显示位置",
+                                items = listOf("LOGO之上", "版本号之下"),
+                                selectedIndex = appearance.style2TextPosition.coerceIn(0, 1),
+                                onSelectedIndexChange = { value -> update { it.copy(style2TextPosition = value) } },
+                            )
+                            if (appearance.style2TextPosition == 0) {
+                                SliderPreference(
+                                    value = appearance.style2TextSpacingAbove.toFloat(),
+                                    onValueChange = { value -> update { it.copy(style2TextSpacingAbove = value.toInt()) } },
+                                    onValueChangeFinished = {},
+                                    title = "文案与LOGO行间距",
+                                    valueText = "${appearance.style2TextSpacingAbove}%",
+                                    valueRange = -120f..120f,
+                                    steps = 239,
+                                )
+                            } else {
+                                SliderPreference(
+                                    value = appearance.style2TextSpacingBelow.toFloat(),
+                                    onValueChange = { value -> update { it.copy(style2TextSpacingBelow = value.toInt()) } },
+                                    onValueChangeFinished = {},
+                                    title = "文案与版本号行间距",
+                                    valueText = "${appearance.style2TextSpacingBelow}%",
+                                    valueRange = -120f..120f,
+                                    steps = 239,
+                                )
+                            }
+                        } else {
+                            OverlayDropdownPreference(
+                                title = "显示位置",
+                                items = listOf("居中", "左对齐", "右对齐"),
+                                selectedIndex = appearance.style2TextAlignment.coerceIn(0, 2),
+                                onSelectedIndexChange = { value -> update { it.copy(style2TextAlignment = value) } },
+                            )
+                            SliderPreference(
+                                value = appearance.style2TextVerticalOffsetForAlignment().toFloat(),
+                                onValueChange = { value -> update { current -> current.withStyle2TextVerticalOffset(current.style2TextAlignment, value.toInt()) } },
+                                onValueChangeFinished = {},
+                                title = "文案上下偏移",
+                                valueText = "${appearance.style2TextVerticalOffsetForAlignment()}%",
+                                valueRange = -120f..120f,
+                                steps = 239,
+                            )
+                            SliderPreference(
+                                value = appearance.style2TextHorizontalOffsetForAlignment().toFloat(),
+                                onValueChange = { value -> update { current -> current.withStyle2TextHorizontalOffset(current.style2TextAlignment, value.toInt()) } },
+                                onValueChangeFinished = {},
+                                title = "文案左右偏移",
+                                valueText = "${appearance.style2TextHorizontalOffsetForAlignment()}%",
+                                valueRange = -120f..120f,
+                                steps = 239,
+                            )
+                        }
+                    }
+                }
+            }
+            item {
+                Group("文本颜色模式") {
+                    OverlayDropdownPreference(
+                        title = "LOGO",
+                        items = listOf("跟随系统", "深色", "浅色"),
+                        selectedIndex = appearance.style2LogoColorMode.coerceIn(0, 2),
+                        onSelectedIndexChange = { value -> update { it.copy(style2LogoColorMode = value) } },
+                    )
+                    OverlayDropdownPreference(
+                        title = "版本号",
+                        items = listOf("跟随系统", "深色", "浅色"),
+                        selectedIndex = appearance.style2VersionColorMode.coerceIn(0, 2),
+                        onSelectedIndexChange = { value -> update { it.copy(style2VersionColorMode = value) } },
+                    )
+                    OverlayDropdownPreference(
+                        title = "文案",
+                        items = listOf("跟随系统", "深色", "浅色"),
+                        selectedIndex = appearance.style2TextColorMode.coerceIn(0, 2),
+                        onSelectedIndexChange = { value -> update { it.copy(style2TextColorMode = value) } },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TutorialCardTextField(label: String, value: String, onValueChange: (String) -> Unit) {
+    var text by remember(value) { mutableStateOf(value) }
+    TextField(
+        value = text,
+        onValueChange = { next -> text = next; onValueChange(next) },
+        label = label,
+        useLabelAsPlaceholder = true,
+        singleLine = true,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp),
+    )
 }
 
 @Composable
@@ -1299,7 +1896,20 @@ private fun Detail(
     onPickAppearanceDevice: () -> Unit,
     onClearAppearanceHome: () -> Unit,
     onClearAppearanceDevice: () -> Unit,
+    onPickTutorialDeviceImage: () -> Unit,
+    onClearTutorialDeviceImage: () -> Unit,
+    onPickStyle1UpdateBackground: () -> Unit,
+    onClearStyle1UpdateBackground: () -> Unit,
+    onPickStyle2DeviceImage: () -> Unit,
+    onClearStyle2DeviceImage: () -> Unit,
+    onPickStyle2UpdateBackground: () -> Unit,
+    onClearStyle2UpdateBackground: () -> Unit,
+    onPickCustomDeviceLogo: () -> Unit,
+    onClearCustomDeviceLogo: () -> Unit,
+    onPickStyle2DeviceLogo: () -> Unit,
+    onClearStyle2DeviceLogo: () -> Unit,
     onPickAppearanceLogo: () -> Unit,
+    onClearAppearanceLogo: () -> Unit,
     openPage: (PageId) -> Unit,
     back: () -> Unit
 ) {
@@ -1341,10 +1951,11 @@ private fun Detail(
         PageId.RASTER_WALLPAPER -> RasterWallpaper(settings, update, onPickRasterImages, onApplyRasterWallpaper, back)
         PageId.SUPER_XIAOAI -> SuperXiaoAi(settings, update, back)
         PageId.CAMERA -> Camera(cameras, updateCamera, back)
-        PageId.SYSTEM_SETTINGS -> SystemSettings(deviceProfile, updateDeviceProfile, appearance, updateAppearance, openPage, onPickAppearanceLogo, back)
+        PageId.SYSTEM_SETTINGS -> SystemSettings(deviceProfile, updateDeviceProfile, appearance, updateAppearance, openPage, onPickAppearanceLogo, onClearAppearanceLogo, back)
         PageId.DEVICE_PROFILE -> DeviceProfileEditor(deviceProfile, updateDeviceProfile, back)
         PageId.SETTINGS_APPEARANCE_HOME -> SettingsAppearancePage(APPEARANCE_SLOT_HOME, appearance, updateAppearance, onPickAppearanceHome, onClearAppearanceHome, back)
         PageId.SETTINGS_APPEARANCE_DEVICE -> SettingsAppearancePage(APPEARANCE_SLOT_DEVICE, appearance, updateAppearance, onPickAppearanceDevice, onClearAppearanceDevice, back)
+            PageId.TUTORIAL_DEVICE_CARD -> TutorialDeviceCardSettings(appearance, updateAppearance, onPickAppearanceLogo, onClearAppearanceLogo, onPickTutorialDeviceImage, onClearTutorialDeviceImage, onPickCustomDeviceLogo, onClearCustomDeviceLogo, onPickStyle1UpdateBackground, onClearStyle1UpdateBackground, onPickStyle2DeviceImage, onClearStyle2DeviceImage, onPickStyle2DeviceLogo, onClearStyle2DeviceLogo, onPickStyle2UpdateBackground, onClearStyle2UpdateBackground, back)
         PageId.ABOUT -> About(back)
         PageId.DONATE -> Donate(back)
         PageId.OPEN -> OpenSource(back)
@@ -1358,7 +1969,7 @@ private fun SuperXiaoAi(
     settings: HookSettings,
     update: ((HookSettings) -> HookSettings) -> Unit,
     back: () -> Unit,
-) = AppPage("\u8d85\u7ea7\u5c0f\u7231\u8f93\u5165\u6cd5", back) { padding, scroll ->
+) = AppPage("\u8d85\u7ea7\u5c0f\u7231\u8f93\u5165\u6cd5", back, restartScopes = setOf(ScopeApplication.SUPER_XIAOAI_IME)) { padding, scroll ->
     AppList(padding, scroll, 28) {
         item {
             Group("\u5916\u89c2") {
@@ -1381,7 +1992,7 @@ private fun Shade(
     presetActions: ShadePresetActions,
     openPage: (PageId) -> Unit,
     back: () -> Unit,
-) = AppPage("\u7cfb\u7edf\u754c\u9762", back) { p, scroll ->
+) = AppPage("\u7cfb\u7edf\u754c\u9762", back, restartScopes = setOf(ScopeApplication.SYSTEM_UI)) { p, scroll ->
     var showSavePresetDialog by remember { mutableStateOf(false) }
     AppList(p, scroll, 28) {
         item {
@@ -2021,7 +2632,7 @@ private fun applyCompactColor(value: MaterialOverride, percent: Int): MaterialOv
 }
 
 @Composable
-private fun Island(s: HookSettings, update: ((HookSettings) -> HookSettings) -> Unit, back: () -> Unit) = AppPage("\u8d85\u7ea7\u5c9b", back) { p, scroll ->
+private fun Island(s: HookSettings, update: ((HookSettings) -> HookSettings) -> Unit, back: () -> Unit) = AppPage("\u8d85\u7ea7\u5c9b", back, restartScopes = setOf(ScopeApplication.SYSTEM_UI)) { p, scroll ->
     AppList(p, scroll, 28) {
         item {
                 Card(Modifier.fillMaxWidth()) {
@@ -2074,7 +2685,7 @@ private fun Island(s: HookSettings, update: ((HookSettings) -> HookSettings) -> 
 }
 
 @Composable
-private fun Status(s: HookSettings, update: ((HookSettings) -> HookSettings) -> Unit, back: () -> Unit) = AppPage("\u72b6\u6001\u680f", back) { p, scroll ->
+private fun Status(s: HookSettings, update: ((HookSettings) -> HookSettings) -> Unit, back: () -> Unit) = AppPage("\u72b6\u6001\u680f", back, restartScopes = setOf(ScopeApplication.SYSTEM_UI)) { p, scroll ->
     AppList(p, scroll, 28) {
         item { Card(Modifier.fillMaxWidth()) {
         Dim("\u65f6\u949f\u5927\u5c0f", s.clockEnabled, { v -> update { it.copy(clockEnabled = v) } }, s.clockSize, 10f..24f) { v -> update { it.copy(clockSize = v) } }
@@ -2111,14 +2722,16 @@ private fun Status(s: HookSettings, update: ((HookSettings) -> HookSettings) -> 
 }
 
 @Composable
-private fun Control(s: HookSettings, update: ((HookSettings) -> HookSettings) -> Unit, back: () -> Unit) = AppPage("\u63a7\u5236\u4e2d\u5fc3", back) { p, scroll ->
-    AppList(p, scroll, 28) { item { Card(Modifier.fillMaxWidth()) {
+private fun Control(s: HookSettings, update: ((HookSettings) -> HookSettings) -> Unit, back: () -> Unit) = AppPage("\u63a7\u5236\u4e2d\u5fc3", back, restartScopes = setOf(ScopeApplication.SYSTEM_UI)) { p, scroll ->
+    AppList(p, scroll, 28) {
+        item { Card(Modifier.fillMaxWidth()) {
         Corner("\u9876\u90e8\u64cd\u4f5c\u6309\u94ae", s.topButtonsRadiusEnabled, { v -> update { it.copy(topButtonsRadiusEnabled = v) } }, s.topButtonsRadius) { v -> update { it.copy(topButtonsRadius = v) } }
         Corner("\u5a92\u4f53\u5361\u7247", s.mediaCardRadiusEnabled, { v -> update { it.copy(mediaCardRadiusEnabled = v) } }, s.mediaCardRadius) { v -> update { it.copy(mediaCardRadius = v) } }
         Corner("\u97f3\u91cf / \u4eae\u5ea6\u6761", s.sliderRadiusEnabled, { v -> update { it.copy(sliderRadiusEnabled = v) } }, s.sliderRadius) { v -> update { it.copy(sliderRadius = v) } }
         Corner("\u4e0b\u534a\u90e8\u5206\u5706\u5f62\u6309\u94ae", s.controlBottomButtonsRadiusEnabled, { v -> update { it.copy(controlBottomButtonsRadiusEnabled = v) } }, s.controlBottomButtonsRadius) { v -> update { it.copy(controlBottomButtonsRadius = v) } }
         Corner("\u878d\u5408\u8bbe\u5907\u4e2d\u5fc3", s.deviceCenterRadiusEnabled, { v -> update { it.copy(deviceCenterRadiusEnabled = v) } }, s.deviceCenterRadius) { v -> update { it.copy(deviceCenterRadius = v) } }
-    } } }
+        } }
+    }
 }
 
 @Composable
@@ -2127,7 +2740,8 @@ private fun Lock(
     update: ((HookSettings) -> HookSettings) -> Unit,
     open: (PageId) -> Unit,
     back: () -> Unit,
-) = AppPage("\u9501\u5c4f", back) { p, scroll ->
+) = AppPage("\u9501\u5c4f", back, restartScopes = setOf(ScopeApplication.SYSTEM_UI, ScopeApplication.AOD)) { p, scroll ->
+    var showBottomTextDialog by remember { mutableStateOf(false) }
     AppList(p, scroll, 28) {
         item {
             Group("\u666f\u6df1") {
@@ -2175,13 +2789,23 @@ private fun Lock(
             }
         }
         item {
-            Group("\u5145\u7535\u4e2d\u6587\u672c") {
-        SwitchPreference(
-            title = "\u53bb\u9664\u9501\u5c4f\u5145\u7535\u4e2d\u6587\u672c",
-            checked = s.lockscreenMiniPlayerEnabled || s.hideLockscreenChargingText,
-            enabled = !s.lockscreenMiniPlayerEnabled,
-            onCheckedChange = { v -> update { it.copy(hideLockscreenChargingText = v) } },
-        )
+            Group("\u9501\u5c4f\u5e95\u90e8\u6587\u672c") {
+                ArrowPreference(
+                    title = "\u9690\u85cf\u9501\u5c4f\u5e95\u90e8\u6587\u672c",
+                    summary = lockscreenBottomTextSummary(s.lockscreenBottomTextMask),
+                    onClick = { showBottomTextDialog = true },
+                )
+            }
+        }
+        item {
+            Group("\u9501\u5c4f\u8f93\u5165") {
+                SwitchPreference(
+                    title = "\u9501\u5c4f\u8f93\u5165\u5bc6\u7801\u754c\u9762\u6570\u5b57\u5706\u5f62\u80cc\u666f",
+                    checked = s.lockscreenPinCircleBackgroundEnabled,
+                    onCheckedChange = { value ->
+                        update { it.copy(lockscreenPinCircleBackgroundEnabled = value) }
+                    },
+                )
             }
         }
         item {
@@ -2194,7 +2818,6 @@ private fun Lock(
                 update {
                     it.copy(
                         lockscreenMiniPlayerEnabled = value,
-                        hideLockscreenChargingText = if (value) true else it.hideLockscreenChargingText,
                     )
                 }
             },
@@ -2205,15 +2828,15 @@ private fun Lock(
             exit = fadeOut(tween(140)) + scaleOut(tween(140), targetScale = .96f),
         ) {
             Column {
-                SwitchPreference(
-                    title = "\u9501\u5c4f\u9690\u85cf\u7cfb\u7edf\u5a92\u4f53\u901a\u77e5",
-                    summary = "\u4ec5\u5728\u9501\u5c4f\u72b6\u6001\u9690\u85cf\uff0c\u89e3\u9501\u540e\u901a\u77e5\u4e2d\u5fc3\u4ecd\u6b63\u5e38\u663e\u793a",
-                    checked = s.lockscreenMiniPlayerHideMediaNotification,
-                    onCheckedChange = { value ->
-                        update { it.copy(lockscreenMiniPlayerHideMediaNotification = value) }
+                OverlayDropdownPreference(
+                    title = "\u9501\u5c4f\u5a92\u4f53\u901a\u77e5",
+                    items = listOf("\u4e0d\u9690\u85cf", "\u59cb\u7ec8\u9690\u85cf", "\u52a8\u6001\u663e\u793a"),
+                    selectedIndex = s.lockscreenMiniPlayerMediaNotificationMode,
+                    onSelectedIndexChange = { value ->
+                        update { it.copy(lockscreenMiniPlayerMediaNotificationMode = value) }
                     },
                 )
-                    OverlayDropdownPreference(
+                OverlayDropdownPreference(
                     title = "\u8ff7\u4f60\u64ad\u653e\u5668\u80cc\u666f",
                     items = listOf("\u8ddf\u968f\u5feb\u6377\u529f\u80fd\u80cc\u666f", "\u7eaf\u8272", "\u9ad8\u7ea7\u6750\u8d28", "\u67d4\u5149\u73bb\u7483"),
                     selectedIndex = s.lockscreenMiniPlayerBackgroundMode,
@@ -2425,6 +3048,57 @@ private fun Lock(
             }
         }
     }
+        LockScreenBottomTextDialog(
+            show = showBottomTextDialog,
+            mask = s.lockscreenBottomTextMask,
+            onDismiss = { showBottomTextDialog = false },
+            onApply = { value ->
+                update { it.copy(lockscreenBottomTextMask = value) }
+                showBottomTextDialog = false
+            },
+        )
+    }
+
+private const val LOCKSCREEN_TEXT_CHARGING = 1
+private const val LOCKSCREEN_TEXT_DND = 2
+private const val LOCKSCREEN_TEXT_NOTIFICATIONS = 4
+
+private fun lockscreenBottomTextSummary(mask: Int): String = listOf(
+    LOCKSCREEN_TEXT_CHARGING to "\u5145\u7535\u4e2d",
+    LOCKSCREEN_TEXT_DND to "\u52ff\u6270",
+    LOCKSCREEN_TEXT_NOTIFICATIONS to "X\u4e2a\u901a\u77e5",
+).filter { mask and it.first != 0 }.joinToString(" / ") { it.second }.ifBlank { "\u672a\u9690\u85cf" }
+
+@Composable
+private fun LockScreenBottomTextDialog(
+    show: Boolean,
+    mask: Int,
+    onDismiss: () -> Unit,
+    onApply: (Int) -> Unit,
+) {
+    var selected by remember(show, mask) { mutableIntStateOf(mask) }
+    val items = listOf(
+        LOCKSCREEN_TEXT_CHARGING to "\u5145\u7535\u4e2d",
+        LOCKSCREEN_TEXT_DND to "\u52ff\u6270",
+        LOCKSCREEN_TEXT_NOTIFICATIONS to "X\u4e2a\u901a\u77e5",
+    )
+    WindowDialog(show = show, onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("\u9009\u62e9\u8981\u9690\u85cf\u7684\u9501\u5c4f\u5e95\u90e8\u6587\u672c", style = MiuixTheme.textStyles.title3, fontWeight = FontWeight.Bold)
+            items.forEach { (bit, title) ->
+                val toggle = { selected = if (selected and bit != 0) selected and bit.inv() else selected or bit }
+                Row(Modifier.fillMaxWidth().clickable(onClick = toggle).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(state = if (selected and bit != 0) ToggleableState.On else ToggleableState.Off, onClick = toggle)
+                    Text(title, style = MiuixTheme.textStyles.body1, modifier = Modifier.padding(start = 10.dp))
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onDismiss, Modifier.weight(1f)) { Text("\u53d6\u6d88") }
+                Button({ onApply(selected) }, Modifier.weight(1f), colors = ButtonDefaults.buttonColorsPrimary()) { Text("\u5e94\u7528") }
+            }
+        }
+    }
 }
 
 @Composable
@@ -2559,7 +3233,7 @@ private fun ShortcutBackgroundColorDialog(
 }
 
 @Composable
-private fun Camera(c: CameraSettings, update: ((CameraSettings) -> CameraSettings) -> Unit, back: () -> Unit) = AppPage("\u76f8\u673a\u4e0e\u76f8\u518c\u7f16\u8f91", back) { p, scroll ->
+private fun Camera(c: CameraSettings, update: ((CameraSettings) -> CameraSettings) -> Unit, back: () -> Unit) = AppPage("\u76f8\u673a\u4e0e\u76f8\u518c\u7f16\u8f91", back, restartScopes = setOf(ScopeApplication.CAMERA, ScopeApplication.GALLERY, ScopeApplication.MEDIA_EDITOR)) { p, scroll ->
     AppList(p, scroll, 28) { item { Card(Modifier.fillMaxWidth()) {
         SwitchPreference(title = "\u542f\u7528\u76f8\u673a\u6a21\u5757", checked = c.masterEnabled, onCheckedChange = { v -> update { it.copy(masterEnabled = v) } })
         SwitchPreference(title = "Leica LCC UI", checked = c.leicaUi, enabled = c.masterEnabled, onCheckedChange = { v -> update { it.copy(leicaUi = v) } })
@@ -2699,9 +3373,12 @@ private fun OpenSource(back: () -> Unit) = AppPage("\u5f00\u6e90\u4ee3\u7801\u58
 private fun AppPage(
     title: String,
     onBack: (() -> Unit)? = null,
+    restartScopes: Set<ScopeApplication> = emptySet(),
     actions: @Composable RowScope.() -> Unit = {},
     content: @Composable (PaddingValues, ScrollBehavior) -> Unit,
 ) {
+    val context = LocalContext.current
+    var showRestartScopeDialog by remember { mutableStateOf(false) }
     val scroll = MiuixScrollBehavior()
     val backdrop = rememberLayerBackdrop()
     val surface = MiuixTheme.colorScheme.surface
@@ -2732,7 +3409,12 @@ private fun AppPage(
                     navigationIcon = {
                         if (onBack != null) GlassBackButton(backdrop, collapsedFraction, onBack)
                     },
-                    actions = actions,
+                    actions = {
+                        if (restartScopes.isNotEmpty()) {
+                            GlassRefreshButton(backdrop, collapsedFraction) { showRestartScopeDialog = true }
+                        }
+                        actions()
+                    },
                 )
                 Box(
                     Modifier.windowInsetsPadding(WindowInsets.statusBars).height(52.dp).fillMaxWidth()
@@ -2745,6 +3427,15 @@ private fun AppPage(
             }
         }
     ) { padding -> Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) { content(padding, scroll) } }
+    RestartScopeDialog(
+        show = showRestartScopeDialog,
+        onDismiss = { showRestartScopeDialog = false },
+        onRestart = { targets ->
+            SystemUiRestarter.restart(context, targets)
+            showRestartScopeDialog = false
+        },
+        availableTargets = restartScopes,
+    )
 }
 
 @Composable
@@ -2833,6 +3524,76 @@ private fun GlassBackButton(backdrop: LayerBackdrop, collapsedFraction: Float, o
             MiuixIcons.Regular.ChevronBackward,
             "\u8fd4\u56de",
             Modifier.size(22.dp).graphicsLayer { translationX = -1.15.dp.toPx() },
+            colorFilter = ColorFilter.tint(iconColor),
+        )
+    }
+}
+
+@Composable
+private fun GlassRefreshButton(backdrop: LayerBackdrop, collapsedFraction: Float, onClick: () -> Unit) {
+    val animationScope = rememberCoroutineScope()
+    val drag = remember(animationScope) {
+        DampedDragAnimation(
+            animationScope = animationScope,
+            initialValue = 0f,
+            valueRange = -1f..1f,
+            visibilityThreshold = .001f,
+            initialScale = 1f,
+            pressedScale = 1.08f,
+            onDragStopped = { animateToValue(0f) },
+            onDrag = { size, amount -> updateValue((targetValue + amount.x / size.width.coerceAtLeast(1)).coerceIn(-1f, 1f)) }
+        )
+    }
+    val highlight = remember(animationScope) {
+        InteractiveHighlight(animationScope) { size, offset -> androidx.compose.ui.geometry.Offset(offset.x.coerceIn(0f, size.width), offset.y.coerceIn(0f, size.height)) }
+    }
+    val glassTint = MiuixTheme.colorScheme.surface.copy(alpha = .42f)
+    val iconColor = MiuixTheme.colorScheme.onSurface
+    val glassAlpha by animateFloatAsState(collapsedFraction, tween(180), label = "refreshButtonGlassAlpha")
+    Box(
+        Modifier.padding(end = 8.dp).size(46.dp)
+            .then(highlight.gestureModifier)
+            .then(drag.modifier)
+            .clickable(interactionSource = null, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            Modifier.matchParentSize()
+                .graphicsLayer { alpha = glassAlpha }
+                .drawBackdrop(
+                    backdrop = backdrop,
+                    shape = { CircleShape },
+                    effects = {
+                        vibrancy()
+                        blur(4.dp.toPx())
+                        val progress = drag.pressProgress
+                        lens(8.dp.toPx() * progress, 12.dp.toPx() * progress, chromaticAberration = true)
+                    },
+                    highlight = { Highlight.Default.copy(alpha = .65f + drag.pressProgress * .35f) },
+                    shadow = {
+                        Shadow.Default.copy(
+                            radius = 5.dp,
+                            color = ComposeColor.Black,
+                            alpha = .24f,
+                        )
+                    },
+                    innerShadow = null,
+                    layerBlock = {
+                        scaleX = drag.scaleX
+                        scaleY = drag.scaleY
+                        val velocity = abs(drag.velocity.coerceIn(-1f, 1f))
+                        scaleX *= 1f + velocity * .12f
+                        scaleY /= 1f + velocity * .08f
+                        translationX = drag.value * 5.dp.toPx()
+                    },
+                    onDrawSurface = { drawCircle(glassTint) }
+                )
+                .then(highlight.modifier)
+        )
+        Image(
+            MiuixIcons.Regular.Refresh,
+            "重启作用域应用",
+            Modifier.size(22.dp),
             colorFilter = ColorFilter.tint(iconColor),
         )
     }
