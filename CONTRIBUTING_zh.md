@@ -1,5 +1,7 @@
 # HyperChanger 贡献指南
 
+HyperChanger 的贡献内容采用 Apache License 2.0。提交贡献即表示你同意其遵循 [LICENSE](LICENSE) 中的条款；历史 MIT 授权致敬说明见 [NOTICE](NOTICE)。
+
 感谢你为 HyperChanger 做出贡献。请遵循以下约定，以便维护者能够高效审查并稳定发布。
 
 ## 开始前

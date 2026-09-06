@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.liquidglass
 
 import android.os.Build

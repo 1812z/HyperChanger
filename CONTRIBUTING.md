@@ -1,5 +1,7 @@
 # Contributing to HyperChanger
 
+Contributions to HyperChanger are accepted under the Apache License 2.0. By submitting a contribution, you agree that it is licensed under the terms in [LICENSE](LICENSE); historical MIT attribution is documented in [NOTICE](NOTICE).
+
 Thank you for contributing to HyperChanger. These guidelines keep changes reviewable and releases dependable.
 
 ## Getting Started

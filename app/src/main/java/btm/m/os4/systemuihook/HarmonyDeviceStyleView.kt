@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.os4.systemuihook
 
 import android.content.Context
@@ -6,6 +8,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffColorFilter
 import android.graphics.RenderEffect
 import android.graphics.RectF
 import android.graphics.Shader
@@ -102,12 +106,26 @@ class HarmonyUpdateCardView(
         version.setTextColor(textColor(style.style2VersionColorMode, secondary))
         version.textSize = 14f
         version.text = sourceText(updateSource, "miui_version_text")
+        val customLogo = logoSource.takeIf { it.exists }?.let { LogoDrawableLoader.load(context, it) }
+        val builtInLogo = customLogo ?: loadBuiltInLogo()
         logo.setImageDrawable(
-            logoSource.takeIf { it.exists }?.let { LogoDrawableLoader.load(context, it) }
-                ?: loadBuiltInLogo(),
+            customLogo ?: builtInLogo?.let {
+                SplitXiaomiOsLogoDrawable(
+                    it,
+                    textColor(style.style2LogoColorMode, if (night) 0xFFF7F8FC.toInt() else 0xFF17181C.toInt())
+                )
+            }
         )
-        // Preserve the HyperOS artwork's intrinsic blue OS letters.
-        logo.colorFilter = null
+        // Imported logos are user artwork and may be recolored as a whole. The
+        // built-in HyperOS logo is split so its blue "OS" remains untouched.
+        logo.colorFilter = if (customLogo != null) {
+            PorterDuffColorFilter(
+                textColor(style.style2LogoColorMode, if (night) 0xFFF7F8FC.toInt() else 0xFF17181C.toInt()),
+                PorterDuff.Mode.SRC_IN,
+            )
+        } else {
+            null
+        }
         logo.visibility = if (logo.drawable == null) View.INVISIBLE else View.VISIBLE
         val horizontalGravity = when (style.style2LogoAlignment.coerceIn(0, 2)) {
             0 -> Gravity.START
@@ -175,8 +193,8 @@ class HarmonyUpdateCardView(
     }
 
     private fun textColor(mode: Int, systemColor: Int): Int = when (mode.coerceIn(0, 2)) {
-        1 -> 0xFFF7F8FC.toInt()
-        2 -> 0xFF17181C.toInt()
+        1 -> 0xFF17181C.toInt()
+        2 -> 0xFFF7F8FC.toInt()
         else -> systemColor
     }
 
@@ -228,6 +246,46 @@ class HarmonyUpdateCardView(
     private fun isNight() = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
+}
+
+/** Draws the system Xiaomi/OS vector as two independently colorable regions. */
+private class SplitXiaomiOsLogoDrawable(
+    private val source: Drawable?,
+    private val xiaomiColor: Int?,
+) : Drawable() {
+    private val xiaomiFilter = xiaomiColor?.let {
+        PorterDuffColorFilter(it, PorterDuff.Mode.SRC_IN)
+    }
+
+    override fun draw(canvas: Canvas) {
+        val drawable = source ?: return
+        val bounds = bounds
+        if (bounds.isEmpty) return
+        drawable.bounds = bounds
+
+        // xiaomi_os_logo's first path occupies about 82% of the viewport; the
+        // trailing region is the independently colored OS wordmark.
+        val split = bounds.left + (bounds.width() * 0.825f).roundToInt()
+        canvas.save()
+        canvas.clipRect(bounds.left, bounds.top, split, bounds.bottom)
+        drawable.colorFilter = xiaomiFilter
+        drawable.draw(canvas)
+        canvas.restore()
+
+        canvas.save()
+        canvas.clipRect(split, bounds.top, bounds.right, bounds.bottom)
+        drawable.colorFilter = null
+        drawable.draw(canvas)
+        canvas.restore()
+        drawable.colorFilter = null
+    }
+
+    override fun setAlpha(alpha: Int) { source?.alpha = alpha; invalidateSelf() }
+    override fun setColorFilter(filter: android.graphics.ColorFilter?) { source?.colorFilter = filter; invalidateSelf() }
+    @Deprecated("Deprecated in Android API")
+    override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
+    override fun getIntrinsicWidth(): Int = source?.intrinsicWidth ?: -1
+    override fun getIntrinsicHeight(): Int = source?.intrinsicHeight ?: -1
 }
 
 class HarmonyInfoCardsView(

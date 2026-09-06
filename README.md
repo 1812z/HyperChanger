@@ -8,14 +8,17 @@
 
 <p align="center">
   <a href="README_zh.md">中文</a> |
-  <a href="https://github.com/ColdP/HyperChanger/releases">Releases</a>
+  <a href="https://github.com/ColdP/HyperChanger/releases">Releases</a> |
+  <a href="https://t.me/HyperChanger">Telegram Group</a>
 </p>
+
+<p align="center"><strong>Join the community on Telegram:</strong> <a href="https://t.me/HyperChanger">https://t.me/HyperChanger</a></p>
 
 <p align="center">
   <img src="https://img.shields.io/github/v/release/ColdP/HyperChanger?style=flat-square" alt="Release">
   <img src="https://img.shields.io/badge/Platform-Android-green?style=flat-square&logo=android" alt="Platform">
   <img src="https://img.shields.io/badge/minSdk-33-blue?style=flat-square" alt="minSdk">
-  <img src="https://img.shields.io/badge/License-MIT-yellow?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/License-Apache--2.0-yellow?style=flat-square" alt="License">
 </p>
 
 ---
@@ -46,11 +49,24 @@ HyperChanger is an experimental, community-developed LSPosed module and is not a
 - Control selected lock-screen effects, including charging text and shortcut appearance.
 - Keep System UI soft-glass effects after applying a global theme.
 - Remove the OTA conversion limit for glass and overlay AOD clock materials.
+- Edit lock-screen widgets with weather, battery, sunrise/sunset, steps, alarms, schedules, and custom signature images; reorder cards and tune layout, colors, and materials.
+- Customize dual-row status-bar signal indicators, network-type labels, visibility, scale, position, and spacing.
 - Restart individual scoped processes from the app after changing settings.
 
 ### Super XiaoAi input method
 
-- Enable the search page's special input-method appearance globally.
+- Remove selected blacklist, clipboard, AI, and voice safety restrictions.
+- Customize the keyboard's glass appearance, colors, corner radius, opacity, and blur.
+
+### System updates and compatibility
+
+- Disable system updates, remove OTA restrictions, and optionally spoof displayed system and SOTA versions.
+- Check HyperOS compatibility before enabling hooks and review the in-app disclaimer and license information.
+
+### Languages and presets
+
+- Use built-in English, Chinese, and Japanese language packs.
+- Import, export, and edit language packs, and exchange complete settings as JSON or QR-code presets.
 
 ### Camera and Gallery
 
@@ -83,6 +99,8 @@ Enable HyperChanger in LSPosed and select only the scopes required for the featu
 | Hyper Gallery plugin | `com.hyper.gallery.plugin` |
 | Media editor | `com.miui.mediaeditor` |
 | Super XiaoAi input method | `com.xiaomi.type` |
+| XiaoAi phrases | `com.miui.phrase` |
+| System updater | `com.android.updater` |
 
 Some packages are optional and may not be installed on every device. LSPosed will only activate hooks for installed, selected scopes.
 
@@ -154,6 +172,7 @@ HyperChanger/
 |   `-- src/main/resources/  LSPosed metadata and scopes
 |-- gradle/                  Gradle wrapper files
 |-- CONTRIBUTING.md
+|-- NOTICE
 `-- LICENSE
 ```
 
@@ -163,4 +182,4 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before openin
 
 ## License
 
-HyperChanger is released under the [MIT License](LICENSE).
+HyperChanger is released under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for historical attribution to the original MIT-licensed release.

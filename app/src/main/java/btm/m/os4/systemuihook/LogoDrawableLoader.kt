@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.os4.systemuihook
 
 import android.content.Context
@@ -11,7 +13,10 @@ import android.graphics.drawable.VectorDrawable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.Rect
 import android.graphics.ImageDecoder
+import android.graphics.BitmapFactory
 import android.util.Xml
+import androidx.core.graphics.PathParser
+import java.io.File
 import java.io.InputStream
 import kotlin.math.max
 import org.xmlpull.v1.XmlPullParser
@@ -34,6 +39,25 @@ object LogoDrawableLoader {
 
     fun forBackground(drawable: Drawable, scale: Float): Drawable = AspectDrawable(drawable, scale.coerceIn(0.5f, 2f))
 
+    /** Loads a persisted local asset without relying on a document-provider URI grant. */
+    fun loadFile(context: Context, file: File): Drawable? = runCatching {
+        if (!file.isFile) return@runCatching null
+        loadBytes(context, file.readBytes())
+    }.getOrNull()
+
+    fun loadBytes(context: Context, bytes: ByteArray): Drawable? {
+        val text = bytes.toString(Charsets.UTF_8).trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+        return when {
+            text.startsWith("<svg", ignoreCase = true) || text.contains("<svg", ignoreCase = true) -> parseSvg(text)
+            text.startsWith("<vector", ignoreCase = true) ||
+                text.startsWith("<?xml", ignoreCase = true) && text.contains("<vector", ignoreCase = true) -> {
+                val parser = Xml.newPullParser().apply { setInput(bytes.inputStream(), "UTF-8") }
+                Drawable.createFromXml(context.resources, parser)
+            }
+            else -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { BitmapDrawable(context.resources, it) }
+        }
+    }
+
     private fun loadXmlOrSvg(context: Context, source: SettingsAppearanceSource): Drawable? {
         context.contentResolver.openInputStream(source.uri)?.use { input ->
             val bytes = input.readBytes()
@@ -49,10 +73,9 @@ object LogoDrawableLoader {
         val paths = Regex("<path\\b([^>]*)>", RegexOption.IGNORE_CASE).findAll(text).mapNotNull { match ->
             val attrs = match.groupValues[1]
             val data = Regex("\\bd\\s*=\\s*[\\\"']([^\\\"']+)", RegexOption.IGNORE_CASE).find(attrs)?.groupValues?.get(1) ?: return@mapNotNull null
-            val path = runCatching {
-                val parser = Class.forName("android.util.PathParser")
-                parser.getMethod("createPathFromPathData", String::class.java).invoke(null, data) as Path
-            }.getOrNull() ?: return@mapNotNull null
+            // android.util.PathParser is hidden on recent Android versions; use AndroidX's public parser.
+            val path = runCatching { PathParser.createPathFromPathData(data) }.getOrNull()
+                ?: return@mapNotNull null
             val fill = Regex("\\bfill\\s*=\\s*[\\\"']([^\\\"']+)", RegexOption.IGNORE_CASE).find(attrs)?.groupValues?.get(1)
             path to parseColor(fill)
         }.toList()

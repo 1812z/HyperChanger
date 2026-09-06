@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.os4.systemuihook
 
 import android.content.Context
@@ -6,6 +8,38 @@ import io.github.libxposed.service.XposedService
 import org.json.JSONObject
 
 const val REMOTE_PREFERENCE_GROUP = "hyper_system_ui_hook"
+internal const val KEY_SYSTEM_UPDATE_DISABLED = "system_update_disabled"
+internal const val KEY_SYSTEM_UPDATE_OTA_LIMIT_REMOVED = "system_update_ota_limit_removed"
+internal const val KEY_SYSTEM_UPDATE_VERSION_SPOOF_ENABLED = "system_update_version_spoof_enabled"
+internal const val KEY_SYSTEM_UPDATE_VERSION = "system_update_version"
+internal const val KEY_SYSTEM_UPDATE_SOTA_VERSION = "system_update_sota_version"
+internal const val KEY_STACKED_MOBILE_SIGNAL_ENABLED = "stacked_mobile_signal_enabled"
+internal const val KEY_STACKED_MOBILE_SIGNAL_SCALE = "stacked_mobile_signal_scale"
+internal const val KEY_STACKED_MOBILE_SIGNAL_VERTICAL_OFFSET = "stacked_mobile_signal_vertical_offset"
+internal const val KEY_STACKED_MOBILE_SIGNAL_LEFT_MARGIN = "stacked_mobile_signal_left_margin"
+internal const val KEY_STACKED_MOBILE_SIGNAL_RIGHT_MARGIN = "stacked_mobile_signal_right_margin"
+internal const val KEY_MOBILE_SIGNAL_HIDE_MODE = "mobile_signal_hide_mode"
+internal const val KEY_MOBILE_NETWORK_TYPE_SCALE = "mobile_network_type_scale"
+internal const val KEY_MOBILE_NETWORK_TYPE_VERTICAL_OFFSET = "mobile_network_type_vertical_offset"
+internal const val KEY_MOBILE_NETWORK_TYPE_LEFT_MARGIN = "mobile_network_type_left_margin"
+internal const val KEY_MOBILE_NETWORK_TYPE_RIGHT_MARGIN = "mobile_network_type_right_margin"
+internal const val KEY_LOCKSCREEN_CLOCK_COLON_FORCE_VISIBLE =
+    "lockscreen_clock_colon_force_visible"
+internal const val KEY_LOCKSCREEN_TEMPLATE_LIMIT_MODE = "lockscreen_template_limit_mode"
+internal const val KEY_LOCKSCREEN_TEMPLATE_LIMIT_CUSTOM = "lockscreen_template_limit_custom"
+
+internal const val LOCKSCREEN_TEMPLATE_LIMIT_SYSTEM_DEFAULT = 0
+internal const val LOCKSCREEN_TEMPLATE_LIMIT_50 = 1
+internal const val LOCKSCREEN_TEMPLATE_LIMIT_60 = 2
+internal const val LOCKSCREEN_TEMPLATE_LIMIT_80 = 3
+internal const val LOCKSCREEN_TEMPLATE_LIMIT_100 = 4
+internal const val LOCKSCREEN_TEMPLATE_LIMIT_CUSTOM = 5
+private const val KEY_STATUS_BAR_SCALE_ADJUSTMENT_MIGRATED =
+    "status_bar_scale_adjustment_migrated"
+private const val KEY_STATUS_BAR_SCALE_ABSOLUTE_MIGRATED =
+    "status_bar_scale_absolute_migrated"
+private const val KEY_STATUS_BAR_SCALE_ABSOLUTE_MIGRATED_V2 =
+    "status_bar_scale_absolute_migrated_v2"
 
 const val LOCKSCREEN_MEDIA_NOTIFICATION_DO_NOT_HIDE = 0
 const val LOCKSCREEN_MEDIA_NOTIFICATION_ALWAYS_HIDE = 1
@@ -66,6 +100,7 @@ data class HookSettings(
     val controlCardBlurRadius: Float = 0f,
     val notificationCardOpacity: Int = 100,
     val notificationCardBlurRadius: Float = 0f,
+    val unifyNotificationMaterial: Boolean = false,
     val notificationContextUnified: Boolean = true,
     val notificationTypeUnified: Boolean = true,
     val notificationCenterBackground: GlassTuning = GlassTuning(),
@@ -88,6 +123,15 @@ data class HookSettings(
     val expandedIslandSelfBlurRadius: Int = 0,
     val expandedIslandShowHighlight: Boolean = false,
     val superXiaoAiGlobalSearchAppearance: Boolean = false,
+    val superXiaoAiBlacklistUnblocked: Boolean = false,
+    val superXiaoAiClipboardUnblocked: Boolean = false,
+    val superXiaoAiAiSafetyUnblocked: Boolean = false,
+    val superXiaoAiVoiceSafetyUnblocked: Boolean = false,
+    val superXiaoAiKeyboardStyleEnabled: Boolean = false,
+    val superXiaoAiKeyboardColorMode: Int = 0,
+    val superXiaoAiKeyboardCornerRadius: Int = 16,
+    val superXiaoAiKeyboardOpacity: Int = 85,
+    val superXiaoAiKeyboardBlur: Int = 50,
     val clockEnabled: Boolean = false,
     val clockSize: Float = 14.8f,
     val paddingEndEnabled: Boolean = false,
@@ -122,6 +166,9 @@ data class HookSettings(
     val rasterWallpaperCustomSensitivity: Float = 1f,
     val notificationFodPositionLimitRemoved: Boolean = false,
     val fingerprintHideMode: Int = 0,
+    val lockscreenClockColonForceVisible: Boolean = false,
+    val lockscreenTemplateLimitMode: Int = LOCKSCREEN_TEMPLATE_LIMIT_SYSTEM_DEFAULT,
+    val lockscreenTemplateLimitCustom: Int = 50,
     /** Bit mask: charging=1, do-not-disturb=2, notification count=4. */
     val lockscreenBottomTextMask: Int = 0,
     val lockscreenPinCircleBackgroundEnabled: Boolean = false,
@@ -151,8 +198,30 @@ data class HookSettings(
     val lockscreenMiniPlayerBackgroundMode: Int = 0,
     val lockscreenMiniPlayerWidth: Float = 240f,
     // This is the same unit as the lockscreen shortcut circle radius. The rendered card is
-    // twice this value, so a shortcut radius of 28dp is matched by entering 28dp here.
+    // twice this value, so a shortcut radius of 10dp is matched by entering 10dp here.
     val lockscreenMiniPlayerHeight: Float = 36f,
+    val lockscreenMiniPlayerArtworkCornerRadius: Float = 12f,
+    val lockscreenWidgetEnabled: Boolean = false,
+    /** Empty means use the current ro.product.marketname value. */
+    val lockscreenWidgetDeviceName: String = "",
+    /** Selected lock-screen widgets, persisted as a bit mask. */
+    val lockscreenWidgetItems: Int = LOCKSCREEN_WIDGET_DEFAULT_ITEMS,
+    /** Comma-separated widget flags, preserving the user-selected left-to-right order. */
+    val lockscreenWidgetOrder: String = LOCKSCREEN_WIDGET_DEFAULT_ORDER,
+    /** Changes whenever the local editor preview image is replaced. */
+    val lockscreenWidgetPreviewVersion: Long = 0L,
+    val lockscreenWidgetCombination: Int = LOCKSCREEN_WIDGET_COMBINATION_ONE,
+    val lockscreenWidgetBatteryMaterialMode: Int = LOCKSCREEN_WIDGET_BATTERY_MATERIAL_PURE,
+    val lockscreenWidgetColorMode: Int = LOCKSCREEN_WIDGET_COLOR_AUTO,
+    val lockscreenWidgetNotificationAvoid: Boolean = true,
+    /** 0=none, 1=PNG, 2=SVG or Android Vector XML. */
+    val lockscreenWidgetSignatureType: Int = LOCKSCREEN_WIDGET_SIGNATURE_NONE,
+    /** Changes whenever the persisted signature asset is replaced or removed. */
+    val lockscreenWidgetSignatureVersion: Long = 0L,
+    val lockscreenWidgetSignatureColor: Int = 0xFFFFFFFF.toInt(),
+    /** Percentage of the 142x64dp signature card's available content size. */
+    val lockscreenWidgetSignatureScale: Int = 100,
+    val lockscreenWidgetSignatureBackground: Boolean = true,
     val miniPlayerPureColor: Int = 0x73000000,
     val miniPlayerAdvancedMaterialColor: Int = 0xFFFFFFFF.toInt(),
     val miniPlayerAdvancedMaterialOpacity: Int = 14,
@@ -169,6 +238,30 @@ data class HookSettings(
     val hideStatusBarWifiStandard: Boolean = false,
     val hideStatusBarClockText: Boolean = false,
     val hideStatusBarNetworkActivity: Boolean = false,
+    val stackedMobileSignalEnabled: Boolean = false,
+    val stackedMobileSignalScale: Float = 1f,
+    val stackedMobileSignalVerticalOffset: Float = 0f,
+    val stackedMobileSignalLeftMargin: Float = 0f,
+    val stackedMobileSignalRightMargin: Float = 0f,
+    /** 0=do not hide, 1=hide non-data SIM, 2=hide all system signal icons. */
+    val mobileSignalHideMode: Int = 0,
+    /** 0=hidden, 1=independent text. */
+    val mobileNetworkTypeMode: Int = 0,
+    /** 0=before signal, 1=after signal. */
+    val mobileNetworkTypePosition: Int = 0,
+    /** 0=always show, 1=show while mobile data is in use. */
+    val mobileNetworkTypeDisplayLogic: Int = 0,
+    val mobileNetworkTypeCustomText: String = "",
+    val mobileNetworkTypeShrink5gaA: Boolean = false,
+    val mobileNetworkTypeScale: Float = 1f,
+    val mobileNetworkTypeVerticalOffset: Float = 0f,
+    val mobileNetworkTypeLeftMargin: Float = 0f,
+    val mobileNetworkTypeRightMargin: Float = 0f,
+    val systemUpdateDisabled: Boolean = false,
+    val systemUpdateOtaLimitRemoved: Boolean = false,
+    val systemUpdateVersionSpoofEnabled: Boolean = false,
+    val systemUpdateVersion: String = "",
+    val systemUpdateSotaVersion: String = "",
     val themeMode: String = "system",
     val navigationStyle: String = "hyper_os",
     val navigationLabelMode: String = "icon_and_text",
@@ -178,7 +271,10 @@ data class HookSettings(
 
 class HookSettingsStore(context: Context) {
     private val local = context.getSharedPreferences(REMOTE_PREFERENCE_GROUP, Context.MODE_PRIVATE)
-    var settings: HookSettings = local.toSettings()
+    var settings: HookSettings = run {
+        migrateStatusBarScaleToAbsolute(local)
+        local.toSettings()
+    }
         private set
 
     fun reload() {
@@ -191,6 +287,7 @@ class HookSettingsStore(context: Context) {
 
     fun syncRemote(service: XposedService) {
         val remote = service.getRemotePreferences(REMOTE_PREFERENCE_GROUP)
+        migrateStatusBarScaleToAbsolute(remote)
         remote.edit().removeLegacyIslandPreferences().removeLegacyShadePreferences().apply()
         settings = if (remote.contains(KEY_INITIALIZED)) {
             remote.toSettings()
@@ -253,6 +350,7 @@ private const val KEY_CONTROL_CARD_OPACITY = "control_card_opacity"
 private const val KEY_CONTROL_CARD_BLUR_RADIUS = "control_card_blur_radius"
 private const val KEY_NOTIFICATION_CARD_OPACITY = "notification_card_opacity"
 private const val KEY_NOTIFICATION_CARD_BLUR_RADIUS = "notification_card_blur_radius"
+private const val KEY_UNIFY_NOTIFICATION_MATERIAL = "unify_notification_material"
 private const val KEY_NOTIFICATION_CONTEXT_UNIFIED = "notification_context_unified"
 private const val KEY_NOTIFICATION_TYPE_UNIFIED = "notification_type_unified"
 private const val KEY_NOTIFICATION_CENTER_BACKGROUND = "notification_center_background_glass"
@@ -277,6 +375,15 @@ private const val KEY_EXPANDED_ISLAND_SELF_BLUR_RADIUS = "expanded_island_self_b
 private const val KEY_EXPANDED_ISLAND_SHOW_HIGHLIGHT = "expanded_island_show_highlight"
 private const val KEY_SUPER_XIAOAI_GLOBAL_SEARCH_APPEARANCE =
     "super_xiaoai_global_search_appearance"
+internal const val KEY_SUPER_XIAOAI_BLACKLIST_UNBLOCKED = "super_xiaoai_blacklist_unblocked"
+internal const val KEY_SUPER_XIAOAI_CLIPBOARD_UNBLOCKED = "super_xiaoai_clipboard_unblocked"
+internal const val KEY_SUPER_XIAOAI_AI_SAFETY_UNBLOCKED = "super_xiaoai_ai_safety_unblocked"
+internal const val KEY_SUPER_XIAOAI_VOICE_SAFETY_UNBLOCKED = "super_xiaoai_voice_safety_unblocked"
+internal const val KEY_SUPER_XIAOAI_KEYBOARD_STYLE_ENABLED = "super_xiaoai_keyboard_style_enabled"
+internal const val KEY_SUPER_XIAOAI_KEYBOARD_COLOR_MODE = "super_xiaoai_keyboard_color_mode"
+internal const val KEY_SUPER_XIAOAI_KEYBOARD_CORNER_RADIUS = "super_xiaoai_keyboard_corner_radius"
+internal const val KEY_SUPER_XIAOAI_KEYBOARD_OPACITY = "super_xiaoai_keyboard_opacity"
+internal const val KEY_SUPER_XIAOAI_KEYBOARD_BLUR = "super_xiaoai_keyboard_blur"
 private const val KEY_CLOCK_ENABLED = "clock_enabled"
 private const val KEY_CLOCK_SIZE = "clock_size"
 private const val KEY_PADDING_END_ENABLED = "padding_end_enabled"
@@ -351,8 +458,62 @@ private const val KEY_LOCKSCREEN_MINI_PLAYER_MEDIA_NOTIFICATION_MODE =
 private const val KEY_LOCKSCREEN_MINI_PLAYER_BACKGROUND_MODE = "lockscreen_mini_player_background_mode"
 private const val KEY_LOCKSCREEN_MINI_PLAYER_WIDTH = "lockscreen_mini_player_width"
 private const val KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT = "lockscreen_mini_player_height"
+private const val KEY_LOCKSCREEN_MINI_PLAYER_ARTWORK_CORNER_RADIUS =
+    "lockscreen_mini_player_artwork_corner_radius"
 private const val KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT_RADIUS_MIGRATED =
     "lockscreen_mini_player_height_radius_migrated"
+internal const val KEY_LOCKSCREEN_WIDGET_ENABLED = "lockscreen_widget_enabled"
+internal const val KEY_LOCKSCREEN_WIDGET_DEVICE_NAME = "lockscreen_widget_device_name"
+internal const val KEY_LOCKSCREEN_WIDGET_ITEMS = "lockscreen_widget_items"
+internal const val KEY_LOCKSCREEN_WIDGET_ORDER = "lockscreen_widget_order"
+internal const val KEY_LOCKSCREEN_WIDGET_PREVIEW_VERSION = "lockscreen_widget_preview_version"
+internal const val KEY_LOCKSCREEN_WIDGET_COMBINATION = "lockscreen_widget_combination"
+internal const val KEY_LOCKSCREEN_WIDGET_BATTERY_MATERIAL_MODE = "lockscreen_widget_battery_material_mode"
+internal const val KEY_LOCKSCREEN_WIDGET_COLOR_MODE = "lockscreen_widget_color_mode"
+internal const val KEY_LOCKSCREEN_WIDGET_NOTIFICATION_AVOID = "lockscreen_widget_notification_avoid"
+internal const val KEY_LOCKSCREEN_WIDGET_SIGNATURE_TYPE = "lockscreen_widget_signature_type"
+internal const val KEY_LOCKSCREEN_WIDGET_SIGNATURE_VERSION = "lockscreen_widget_signature_version"
+internal const val KEY_LOCKSCREEN_WIDGET_SIGNATURE_COLOR = "lockscreen_widget_signature_color"
+internal const val KEY_LOCKSCREEN_WIDGET_SIGNATURE_SCALE = "lockscreen_widget_signature_scale"
+internal const val KEY_LOCKSCREEN_WIDGET_SIGNATURE_BACKGROUND = "lockscreen_widget_signature_background"
+internal const val LOCKSCREEN_WIDGET_SIGNATURE_SLOT = "lockscreen_widget_signature"
+internal const val LOCKSCREEN_WIDGET_BATTERY_MATERIAL_PURE = 0
+internal const val LOCKSCREEN_WIDGET_BATTERY_MATERIAL_ADVANCED = 1
+internal const val LOCKSCREEN_WIDGET_BATTERY_MATERIAL_SOFT = 2
+internal const val LOCKSCREEN_WIDGET_COMBINATION_ONE = 0
+internal const val LOCKSCREEN_WIDGET_COMBINATION_TWO = 1
+/** The two original combination-one cards remain distinct widgets in the editor. */
+internal const val LOCKSCREEN_WIDGET_ITEM_DETAIL_WEATHER = 1
+internal const val LOCKSCREEN_WIDGET_ITEM_DETAIL_BATTERY = 1 shl 1
+internal const val LOCKSCREEN_WIDGET_ITEM_SUN = 1 shl 2
+internal const val LOCKSCREEN_WIDGET_ITEM_STEPS = 1 shl 3
+internal const val LOCKSCREEN_WIDGET_ITEM_COMPACT_WEATHER = 1 shl 4
+internal const val LOCKSCREEN_WIDGET_ITEM_SIGNATURE = 1 shl 5
+internal const val LOCKSCREEN_WIDGET_ITEM_HUMIDITY = 1 shl 6
+internal const val LOCKSCREEN_WIDGET_ITEM_AQI = 1 shl 7
+internal const val LOCKSCREEN_WIDGET_ITEM_FEELS_LIKE = 1 shl 8
+internal const val LOCKSCREEN_WIDGET_ITEM_WIND = 1 shl 9
+internal const val LOCKSCREEN_WIDGET_ITEM_STAND = 1 shl 10
+internal const val LOCKSCREEN_WIDGET_ITEM_STEPS_WIDE = 1 shl 11
+internal const val LOCKSCREEN_WIDGET_ITEM_ALARM = 1 shl 12
+internal const val LOCKSCREEN_WIDGET_ITEM_SCHEDULE = 1 shl 13
+internal const val LOCKSCREEN_WIDGET_ALL_ITEMS =
+    LOCKSCREEN_WIDGET_ITEM_DETAIL_WEATHER or LOCKSCREEN_WIDGET_ITEM_DETAIL_BATTERY or
+        LOCKSCREEN_WIDGET_ITEM_SUN or LOCKSCREEN_WIDGET_ITEM_STEPS or
+        LOCKSCREEN_WIDGET_ITEM_COMPACT_WEATHER or LOCKSCREEN_WIDGET_ITEM_SIGNATURE or
+        LOCKSCREEN_WIDGET_ITEM_HUMIDITY or LOCKSCREEN_WIDGET_ITEM_AQI or
+        LOCKSCREEN_WIDGET_ITEM_FEELS_LIKE or LOCKSCREEN_WIDGET_ITEM_WIND or
+        LOCKSCREEN_WIDGET_ITEM_STAND or LOCKSCREEN_WIDGET_ITEM_STEPS_WIDE or
+        LOCKSCREEN_WIDGET_ITEM_ALARM or LOCKSCREEN_WIDGET_ITEM_SCHEDULE
+internal const val LOCKSCREEN_WIDGET_DEFAULT_ITEMS =
+    LOCKSCREEN_WIDGET_ITEM_DETAIL_WEATHER or LOCKSCREEN_WIDGET_ITEM_DETAIL_BATTERY
+internal const val LOCKSCREEN_WIDGET_DEFAULT_ORDER = "1,2,16,4,8,32,64,128,256,512,1024,2048,4096,8192"
+internal const val LOCKSCREEN_WIDGET_COLOR_LIGHT = 0
+internal const val LOCKSCREEN_WIDGET_COLOR_DARK = 1
+internal const val LOCKSCREEN_WIDGET_COLOR_AUTO = 2
+internal const val LOCKSCREEN_WIDGET_SIGNATURE_NONE = 0
+internal const val LOCKSCREEN_WIDGET_SIGNATURE_PNG = 1
+internal const val LOCKSCREEN_WIDGET_SIGNATURE_VECTOR = 2
 private const val KEY_MINI_PLAYER_PURE_COLOR = "mini_player_pure_color"
 private const val KEY_MINI_PLAYER_ADVANCED_MATERIAL_COLOR = "mini_player_advanced_material_color"
 private const val KEY_MINI_PLAYER_ADVANCED_MATERIAL_OPACITY = "mini_player_advanced_material_opacity"
@@ -372,11 +533,38 @@ private const val KEY_HIDE_STATUS_BAR_NETWORK_TYPE = "hide_status_bar_network_ty
 private const val KEY_HIDE_STATUS_BAR_WIFI_STANDARD = "hide_status_bar_wifi_standard"
 private const val KEY_HIDE_STATUS_BAR_CLOCK_TEXT = "hide_status_bar_clock_text"
 private const val KEY_HIDE_STATUS_BAR_NETWORK_ACTIVITY = "hide_status_bar_network_activity"
+private const val KEY_MOBILE_NETWORK_TYPE_MODE = "mobile_network_type_mode"
+private const val KEY_MOBILE_NETWORK_TYPE_POSITION = "mobile_network_type_position"
+private const val KEY_MOBILE_NETWORK_TYPE_DISPLAY_LOGIC = "mobile_network_type_display_logic"
+private const val KEY_MOBILE_NETWORK_TYPE_CUSTOM_TEXT = "mobile_network_type_custom_text"
+private const val KEY_MOBILE_NETWORK_TYPE_SHRINK_5GA_A = "mobile_network_type_shrink_5ga_a"
 private const val KEY_THEME_MODE = "theme_mode"
 private const val KEY_NAVIGATION_STYLE = "navigation_style"
 private const val KEY_NAVIGATION_LABEL_MODE = "navigation_label_mode"
 private const val KEY_PREDICTIVE_BACK_ENABLED = "predictive_back_enabled"
 private const val KEY_PREDICTIVE_BACK_PROGRESS = "predictive_back_progress"
+private fun migrateStatusBarScaleToAbsolute(preferences: SharedPreferences) {
+    if (preferences.getBoolean(KEY_STATUS_BAR_SCALE_ABSOLUTE_MIGRATED_V2, false)) return
+    val editor = preferences.edit()
+    // The previous UI stored a delta where 0 meant the default size. The current UI stores
+    // the final multiplier, so migrate each existing value once to keep the old appearance.
+    if (preferences.contains(KEY_STACKED_MOBILE_SIGNAL_SCALE)) {
+        editor.putFloat(
+            KEY_STACKED_MOBILE_SIGNAL_SCALE,
+            preferences.getFloat(KEY_STACKED_MOBILE_SIGNAL_SCALE, 0f) + 1f,
+        )
+    }
+    if (preferences.contains(KEY_MOBILE_NETWORK_TYPE_SCALE)) {
+        editor.putFloat(
+            KEY_MOBILE_NETWORK_TYPE_SCALE,
+            preferences.getFloat(KEY_MOBILE_NETWORK_TYPE_SCALE, 0f) + 1f,
+        )
+    }
+    editor.putBoolean(KEY_STATUS_BAR_SCALE_ADJUSTMENT_MIGRATED, true)
+    editor.putBoolean(KEY_STATUS_BAR_SCALE_ABSOLUTE_MIGRATED, true)
+    editor.putBoolean(KEY_STATUS_BAR_SCALE_ABSOLUTE_MIGRATED_V2, true).apply()
+}
+
 internal fun SharedPreferences.readMiniPlayerHeightRadius(): Float {
     val raw = getFloat(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT, 36f)
     if (contains(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT) &&
@@ -390,9 +578,83 @@ internal fun SharedPreferences.readMiniPlayerHeightRadius(): Float {
             .putFloat(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT, converted)
             .putBoolean(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT_RADIUS_MIGRATED, true)
             .apply()
-        return converted.coerceIn(28f, 80f)
+        return converted.coerceIn(10f, 60f)
     }
-    return raw.coerceIn(28f, 80f)
+    return raw.coerceIn(10f, 60f)
+}
+
+internal fun SharedPreferences.readLockscreenWidgetItems(): Int {
+    val stored = if (contains(KEY_LOCKSCREEN_WIDGET_ITEMS)) {
+        getInt(KEY_LOCKSCREEN_WIDGET_ITEMS, LOCKSCREEN_WIDGET_DEFAULT_ITEMS)
+    } else {
+        when (getInt(KEY_LOCKSCREEN_WIDGET_COMBINATION, LOCKSCREEN_WIDGET_COMBINATION_ONE)) {
+            LOCKSCREEN_WIDGET_COMBINATION_TWO ->
+                LOCKSCREEN_WIDGET_ITEM_COMPACT_WEATHER or LOCKSCREEN_WIDGET_ITEM_SUN or LOCKSCREEN_WIDGET_ITEM_STEPS
+            else -> LOCKSCREEN_WIDGET_DEFAULT_ITEMS
+        }
+    }
+    // Before compact weather became its own widget, the old combination-two mask reused
+    // flag 1. Migrate that exact legacy composition without changing combination one.
+    val legacyCombinationTwo =
+        LOCKSCREEN_WIDGET_ITEM_DETAIL_WEATHER or LOCKSCREEN_WIDGET_ITEM_SUN or LOCKSCREEN_WIDGET_ITEM_STEPS
+    val normalized = if (stored == legacyCombinationTwo) {
+        LOCKSCREEN_WIDGET_ITEM_COMPACT_WEATHER or LOCKSCREEN_WIDGET_ITEM_SUN or LOCKSCREEN_WIDGET_ITEM_STEPS
+    } else {
+        stored
+    }
+    return (normalized and LOCKSCREEN_WIDGET_ALL_ITEMS).takeIf { it != 0 }
+        ?: LOCKSCREEN_WIDGET_DEFAULT_ITEMS
+}
+
+internal fun SharedPreferences.readLockscreenWidgetOrder(itemMask: Int = readLockscreenWidgetItems()): List<Int> {
+    val hasCompactWeather = itemMask and LOCKSCREEN_WIDGET_ITEM_COMPACT_WEATHER != 0
+    val hasDetailedWeather = itemMask and LOCKSCREEN_WIDGET_ITEM_DETAIL_WEATHER != 0
+    return getString(KEY_LOCKSCREEN_WIDGET_ORDER, LOCKSCREEN_WIDGET_DEFAULT_ORDER)
+        .orEmpty()
+        .split(',')
+        .mapNotNull(String::toIntOrNull)
+        .map { flag ->
+            if (hasCompactWeather && !hasDetailedWeather && flag == LOCKSCREEN_WIDGET_ITEM_DETAIL_WEATHER) {
+                LOCKSCREEN_WIDGET_ITEM_COMPACT_WEATHER
+            } else {
+                flag
+            }
+        }
+        .filter { it in listOf(
+            LOCKSCREEN_WIDGET_ITEM_DETAIL_WEATHER,
+            LOCKSCREEN_WIDGET_ITEM_DETAIL_BATTERY,
+            LOCKSCREEN_WIDGET_ITEM_SUN,
+            LOCKSCREEN_WIDGET_ITEM_STEPS,
+            LOCKSCREEN_WIDGET_ITEM_STEPS_WIDE,
+            LOCKSCREEN_WIDGET_ITEM_COMPACT_WEATHER,
+            LOCKSCREEN_WIDGET_ITEM_SIGNATURE,
+            LOCKSCREEN_WIDGET_ITEM_HUMIDITY,
+            LOCKSCREEN_WIDGET_ITEM_AQI,
+            LOCKSCREEN_WIDGET_ITEM_FEELS_LIKE,
+            LOCKSCREEN_WIDGET_ITEM_WIND,
+            LOCKSCREEN_WIDGET_ITEM_STAND,
+            LOCKSCREEN_WIDGET_ITEM_ALARM,
+            LOCKSCREEN_WIDGET_ITEM_SCHEDULE,
+        ) && itemMask and it != 0 }
+        .distinct()
+        .let { stored ->
+            stored + listOf(
+                LOCKSCREEN_WIDGET_ITEM_DETAIL_WEATHER,
+                LOCKSCREEN_WIDGET_ITEM_DETAIL_BATTERY,
+                LOCKSCREEN_WIDGET_ITEM_COMPACT_WEATHER,
+                LOCKSCREEN_WIDGET_ITEM_SUN,
+                LOCKSCREEN_WIDGET_ITEM_STEPS,
+                LOCKSCREEN_WIDGET_ITEM_STEPS_WIDE,
+                LOCKSCREEN_WIDGET_ITEM_SIGNATURE,
+                LOCKSCREEN_WIDGET_ITEM_HUMIDITY,
+                LOCKSCREEN_WIDGET_ITEM_AQI,
+                LOCKSCREEN_WIDGET_ITEM_FEELS_LIKE,
+                LOCKSCREEN_WIDGET_ITEM_WIND,
+                LOCKSCREEN_WIDGET_ITEM_STAND,
+                LOCKSCREEN_WIDGET_ITEM_ALARM,
+                LOCKSCREEN_WIDGET_ITEM_SCHEDULE,
+            ).filter { itemMask and it != 0 && it !in stored }
+        }
 }
 
 private fun SharedPreferences.toSettings(): HookSettings {
@@ -416,6 +678,7 @@ private fun SharedPreferences.toSettings(): HookSettings {
     controlCardBlurRadius = getFloat(KEY_CONTROL_CARD_BLUR_RADIUS, 0f).coerceIn(0f, 40f),
     notificationCardOpacity = getInt(KEY_NOTIFICATION_CARD_OPACITY, 100).coerceIn(0, 100),
     notificationCardBlurRadius = getFloat(KEY_NOTIFICATION_CARD_BLUR_RADIUS, 0f).coerceIn(0f, 40f),
+    unifyNotificationMaterial = getBoolean(KEY_UNIFY_NOTIFICATION_MATERIAL, false),
     notificationContextUnified = getBoolean(KEY_NOTIFICATION_CONTEXT_UNIFIED, true),
     notificationTypeUnified = getBoolean(KEY_NOTIFICATION_TYPE_UNIFIED, true),
     notificationCenterBackground = getGlassTuning(KEY_NOTIFICATION_CENTER_BACKGROUND),
@@ -442,6 +705,15 @@ private fun SharedPreferences.toSettings(): HookSettings {
         KEY_SUPER_XIAOAI_GLOBAL_SEARCH_APPEARANCE,
         false,
     ),
+    superXiaoAiBlacklistUnblocked = getBoolean(KEY_SUPER_XIAOAI_BLACKLIST_UNBLOCKED, false),
+    superXiaoAiClipboardUnblocked = getBoolean(KEY_SUPER_XIAOAI_CLIPBOARD_UNBLOCKED, false),
+    superXiaoAiAiSafetyUnblocked = getBoolean(KEY_SUPER_XIAOAI_AI_SAFETY_UNBLOCKED, false),
+    superXiaoAiVoiceSafetyUnblocked = getBoolean(KEY_SUPER_XIAOAI_VOICE_SAFETY_UNBLOCKED, false),
+    superXiaoAiKeyboardStyleEnabled = getBoolean(KEY_SUPER_XIAOAI_KEYBOARD_STYLE_ENABLED, false),
+    superXiaoAiKeyboardColorMode = getInt(KEY_SUPER_XIAOAI_KEYBOARD_COLOR_MODE, 0).coerceIn(0, 2),
+    superXiaoAiKeyboardCornerRadius = getInt(KEY_SUPER_XIAOAI_KEYBOARD_CORNER_RADIUS, 16).coerceIn(0, 48),
+    superXiaoAiKeyboardOpacity = getInt(KEY_SUPER_XIAOAI_KEYBOARD_OPACITY, 85).coerceIn(0, 100),
+    superXiaoAiKeyboardBlur = getInt(KEY_SUPER_XIAOAI_KEYBOARD_BLUR, 50).coerceIn(0, 100),
     clockEnabled = getBoolean(KEY_CLOCK_ENABLED, false),
     clockSize = getFloat(KEY_CLOCK_SIZE, 14.8f).coerceIn(10f, 24f),
     paddingEndEnabled = getBoolean(KEY_PADDING_END_ENABLED, false),
@@ -502,6 +774,16 @@ private fun SharedPreferences.toSettings(): HookSettings {
         // The legacy hide-icon choice was global; preserve it during upgrade.
         if (getInt(KEY_NOTIFICATION_FOD_MODE, 0) == 1) 2 else 0
     },
+    lockscreenClockColonForceVisible = getBoolean(
+        KEY_LOCKSCREEN_CLOCK_COLON_FORCE_VISIBLE,
+        false,
+    ),
+    lockscreenTemplateLimitMode = getInt(
+        KEY_LOCKSCREEN_TEMPLATE_LIMIT_MODE,
+        LOCKSCREEN_TEMPLATE_LIMIT_SYSTEM_DEFAULT,
+    ).coerceIn(LOCKSCREEN_TEMPLATE_LIMIT_SYSTEM_DEFAULT, LOCKSCREEN_TEMPLATE_LIMIT_CUSTOM),
+    lockscreenTemplateLimitCustom = getInt(KEY_LOCKSCREEN_TEMPLATE_LIMIT_CUSTOM, 50)
+        .coerceIn(20, 200),
     lockscreenBottomTextMask = if (contains(KEY_LOCKSCREEN_BOTTOM_TEXT_MASK)) {
         getInt(KEY_LOCKSCREEN_BOTTOM_TEXT_MASK, 0).coerceIn(0, 7)
     } else {
@@ -522,7 +804,7 @@ private fun SharedPreferences.toSettings(): HookSettings {
         if (getBoolean(KEY_LOCKSCREEN_SHORTCUT_GLASS_ENABLED, false)) 3 else 0,
     ).coerceIn(0, 3),
     lockscreenShortcutGlassRadius = getFloat(KEY_LOCKSCREEN_SHORTCUT_GLASS_RADIUS, 48f)
-        .coerceIn(28f, 80f),
+        .coerceIn(10f, 60f),
     lockscreenShortcutBackgroundRadiusEnabled = getBoolean(
         KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_RADIUS_ENABLED,
         false,
@@ -563,6 +845,49 @@ private fun SharedPreferences.toSettings(): HookSettings {
     lockscreenMiniPlayerWidth = getFloat(KEY_LOCKSCREEN_MINI_PLAYER_WIDTH, 240f)
         .coerceIn(160f, 360f),
     lockscreenMiniPlayerHeight = readMiniPlayerHeightRadius(),
+    lockscreenMiniPlayerArtworkCornerRadius = getFloat(
+        KEY_LOCKSCREEN_MINI_PLAYER_ARTWORK_CORNER_RADIUS,
+        12f,
+    ).coerceIn(0f, 60f),
+    lockscreenWidgetEnabled = getBoolean(KEY_LOCKSCREEN_WIDGET_ENABLED, false),
+    lockscreenWidgetDeviceName = getString(KEY_LOCKSCREEN_WIDGET_DEVICE_NAME, "")
+        .orEmpty().take(64),
+    lockscreenWidgetItems = readLockscreenWidgetItems(),
+    lockscreenWidgetOrder = readLockscreenWidgetOrder().joinToString(","),
+    lockscreenWidgetPreviewVersion = getLong(KEY_LOCKSCREEN_WIDGET_PREVIEW_VERSION, 0L),
+    lockscreenWidgetCombination = getInt(
+        KEY_LOCKSCREEN_WIDGET_COMBINATION,
+        LOCKSCREEN_WIDGET_COMBINATION_ONE,
+    ).coerceIn(
+        LOCKSCREEN_WIDGET_COMBINATION_ONE,
+        LOCKSCREEN_WIDGET_COMBINATION_TWO,
+    ),
+    lockscreenWidgetBatteryMaterialMode = getInt(
+        KEY_LOCKSCREEN_WIDGET_BATTERY_MATERIAL_MODE,
+        LOCKSCREEN_WIDGET_BATTERY_MATERIAL_PURE,
+    ).coerceIn(
+        LOCKSCREEN_WIDGET_BATTERY_MATERIAL_PURE,
+        LOCKSCREEN_WIDGET_BATTERY_MATERIAL_SOFT,
+    ),
+    lockscreenWidgetColorMode = getInt(
+        KEY_LOCKSCREEN_WIDGET_COLOR_MODE,
+        LOCKSCREEN_WIDGET_COLOR_AUTO,
+    ).coerceIn(
+        LOCKSCREEN_WIDGET_COLOR_LIGHT,
+        LOCKSCREEN_WIDGET_COLOR_AUTO,
+    ),
+    lockscreenWidgetNotificationAvoid = getBoolean(
+        KEY_LOCKSCREEN_WIDGET_NOTIFICATION_AVOID,
+        true,
+    ),
+    lockscreenWidgetSignatureType = getInt(
+        KEY_LOCKSCREEN_WIDGET_SIGNATURE_TYPE,
+        LOCKSCREEN_WIDGET_SIGNATURE_NONE,
+    ).coerceIn(LOCKSCREEN_WIDGET_SIGNATURE_NONE, LOCKSCREEN_WIDGET_SIGNATURE_VECTOR),
+    lockscreenWidgetSignatureVersion = getLong(KEY_LOCKSCREEN_WIDGET_SIGNATURE_VERSION, 0L),
+    lockscreenWidgetSignatureColor = getInt(KEY_LOCKSCREEN_WIDGET_SIGNATURE_COLOR, 0xFFFFFFFF.toInt()),
+    lockscreenWidgetSignatureScale = getInt(KEY_LOCKSCREEN_WIDGET_SIGNATURE_SCALE, 100).coerceIn(25, 200),
+    lockscreenWidgetSignatureBackground = getBoolean(KEY_LOCKSCREEN_WIDGET_SIGNATURE_BACKGROUND, true),
     miniPlayerPureColor = getInt(KEY_MINI_PLAYER_PURE_COLOR, 0x73000000),
     miniPlayerAdvancedMaterialColor = getInt(
         KEY_MINI_PLAYER_ADVANCED_MATERIAL_COLOR,
@@ -592,6 +917,37 @@ private fun SharedPreferences.toSettings(): HookSettings {
     hideStatusBarWifiStandard = getBoolean(KEY_HIDE_STATUS_BAR_WIFI_STANDARD, false),
     hideStatusBarClockText = getBoolean(KEY_HIDE_STATUS_BAR_CLOCK_TEXT, false),
     hideStatusBarNetworkActivity = getBoolean(KEY_HIDE_STATUS_BAR_NETWORK_ACTIVITY, false),
+    stackedMobileSignalEnabled = getBoolean(KEY_STACKED_MOBILE_SIGNAL_ENABLED, false),
+    stackedMobileSignalScale = getFloat(KEY_STACKED_MOBILE_SIGNAL_SCALE, 1f)
+        .coerceIn(0.1f, 3f),
+    stackedMobileSignalVerticalOffset = getFloat(KEY_STACKED_MOBILE_SIGNAL_VERTICAL_OFFSET, 0f)
+        .coerceIn(-8f, 8f),
+    stackedMobileSignalLeftMargin = getFloat(KEY_STACKED_MOBILE_SIGNAL_LEFT_MARGIN, 0f)
+        .coerceIn(-8f, 8f),
+    stackedMobileSignalRightMargin = getFloat(KEY_STACKED_MOBILE_SIGNAL_RIGHT_MARGIN, 0f)
+        .coerceIn(-8f, 8f),
+    mobileSignalHideMode = getInt(KEY_MOBILE_SIGNAL_HIDE_MODE, 0).coerceIn(0, 2),
+    // Values from the previous three-option menu (0=system default, 2=hidden)
+    // are both represented by the new hidden option.
+    mobileNetworkTypeMode = getInt(KEY_MOBILE_NETWORK_TYPE_MODE, 0).let { if (it == 1) 1 else 0 },
+    mobileNetworkTypePosition = getInt(KEY_MOBILE_NETWORK_TYPE_POSITION, 0).coerceIn(0, 1),
+    mobileNetworkTypeDisplayLogic = getInt(KEY_MOBILE_NETWORK_TYPE_DISPLAY_LOGIC, 0).coerceIn(0, 1),
+    mobileNetworkTypeCustomText = getString(KEY_MOBILE_NETWORK_TYPE_CUSTOM_TEXT, "")
+        .orEmpty().take(128),
+    mobileNetworkTypeShrink5gaA = getBoolean(KEY_MOBILE_NETWORK_TYPE_SHRINK_5GA_A, false),
+    mobileNetworkTypeScale = getFloat(KEY_MOBILE_NETWORK_TYPE_SCALE, 1f)
+        .coerceIn(0.1f, 3f),
+    mobileNetworkTypeVerticalOffset = getFloat(KEY_MOBILE_NETWORK_TYPE_VERTICAL_OFFSET, 0f)
+        .coerceIn(-8f, 8f),
+    mobileNetworkTypeLeftMargin = getFloat(KEY_MOBILE_NETWORK_TYPE_LEFT_MARGIN, 0f)
+        .coerceIn(-8f, 8f),
+    mobileNetworkTypeRightMargin = getFloat(KEY_MOBILE_NETWORK_TYPE_RIGHT_MARGIN, 0f)
+        .coerceIn(-8f, 8f),
+    systemUpdateDisabled = getBoolean(KEY_SYSTEM_UPDATE_DISABLED, false),
+    systemUpdateOtaLimitRemoved = getBoolean(KEY_SYSTEM_UPDATE_OTA_LIMIT_REMOVED, false),
+    systemUpdateVersionSpoofEnabled = getBoolean(KEY_SYSTEM_UPDATE_VERSION_SPOOF_ENABLED, false),
+    systemUpdateVersion = getString(KEY_SYSTEM_UPDATE_VERSION, "").orEmpty().take(128),
+    systemUpdateSotaVersion = getString(KEY_SYSTEM_UPDATE_SOTA_VERSION, "").orEmpty().take(128),
     themeMode = getString(KEY_THEME_MODE, "system").orEmpty().ifBlank { "system" },
     navigationStyle = getString(KEY_NAVIGATION_STYLE, "hyper_os").orEmpty().ifBlank { "hyper_os" },
     navigationLabelMode = getString(KEY_NAVIGATION_LABEL_MODE, "icon_and_text").orEmpty().ifBlank { "icon_and_text" },
@@ -754,6 +1110,7 @@ private fun SharedPreferences.write(value: HookSettings) {
         .putString(KEY_NOTIFICATION_CENTER_BACKGROUND_MATERIAL, value.notificationCenterBackgroundMaterial.serialize())
         .putString(KEY_CONTROL_CENTER_BACKGROUND_MATERIAL, value.controlCenterBackgroundMaterial.serialize())
         .putBoolean(KEY_SHADE_SETTINGS_UNIFIED, value.shadeSettingsUnified)
+        .putBoolean(KEY_UNIFY_NOTIFICATION_MATERIAL, value.unifyNotificationMaterial)
         .putBoolean(
             KEY_REMOVE_FOCUS_AND_ISLAND_WHITELIST_LIMIT,
             value.removeFocusAndIslandWhitelistLimit,
@@ -770,6 +1127,15 @@ private fun SharedPreferences.write(value: HookSettings) {
             KEY_SUPER_XIAOAI_GLOBAL_SEARCH_APPEARANCE,
             value.superXiaoAiGlobalSearchAppearance,
         )
+        .putBoolean(KEY_SUPER_XIAOAI_BLACKLIST_UNBLOCKED, value.superXiaoAiBlacklistUnblocked)
+        .putBoolean(KEY_SUPER_XIAOAI_CLIPBOARD_UNBLOCKED, value.superXiaoAiClipboardUnblocked)
+        .putBoolean(KEY_SUPER_XIAOAI_AI_SAFETY_UNBLOCKED, value.superXiaoAiAiSafetyUnblocked)
+        .putBoolean(KEY_SUPER_XIAOAI_VOICE_SAFETY_UNBLOCKED, value.superXiaoAiVoiceSafetyUnblocked)
+        .putBoolean(KEY_SUPER_XIAOAI_KEYBOARD_STYLE_ENABLED, value.superXiaoAiKeyboardStyleEnabled)
+        .putInt(KEY_SUPER_XIAOAI_KEYBOARD_COLOR_MODE, value.superXiaoAiKeyboardColorMode)
+        .putInt(KEY_SUPER_XIAOAI_KEYBOARD_CORNER_RADIUS, value.superXiaoAiKeyboardCornerRadius)
+        .putInt(KEY_SUPER_XIAOAI_KEYBOARD_OPACITY, value.superXiaoAiKeyboardOpacity)
+        .putInt(KEY_SUPER_XIAOAI_KEYBOARD_BLUR, value.superXiaoAiKeyboardBlur)
         .putBoolean(KEY_CLOCK_ENABLED, value.clockEnabled)
         .putFloat(KEY_CLOCK_SIZE, value.clockSize)
         .putBoolean(KEY_STATUS_DIMENSION_DELTAS_V1, true)
@@ -812,6 +1178,18 @@ private fun SharedPreferences.write(value: HookSettings) {
         .putFloat(KEY_RASTER_WALLPAPER_CUSTOM_SENSITIVITY, value.rasterWallpaperCustomSensitivity)
         .putBoolean(KEY_NOTIFICATION_FOD_POSITION_LIMIT_REMOVED, value.notificationFodPositionLimitRemoved)
         .putInt(KEY_FINGERPRINT_HIDE_MODE, value.fingerprintHideMode)
+        .putBoolean(
+            KEY_LOCKSCREEN_CLOCK_COLON_FORCE_VISIBLE,
+            value.lockscreenClockColonForceVisible,
+        )
+        .putInt(
+            KEY_LOCKSCREEN_TEMPLATE_LIMIT_MODE,
+            value.lockscreenTemplateLimitMode.coerceIn(
+                LOCKSCREEN_TEMPLATE_LIMIT_SYSTEM_DEFAULT,
+                LOCKSCREEN_TEMPLATE_LIMIT_CUSTOM,
+            ),
+        )
+        .putInt(KEY_LOCKSCREEN_TEMPLATE_LIMIT_CUSTOM, value.lockscreenTemplateLimitCustom.coerceIn(20, 200))
         .putInt(KEY_LOCKSCREEN_BOTTOM_TEXT_MASK, value.lockscreenBottomTextMask.coerceIn(0, 7))
         .putBoolean(KEY_HIDE_LOCKSCREEN_CHARGING_TEXT, value.lockscreenBottomTextMask and 1 != 0)
         .putBoolean(
@@ -859,7 +1237,56 @@ private fun SharedPreferences.write(value: HookSettings) {
         .putInt(KEY_LOCKSCREEN_MINI_PLAYER_BACKGROUND_MODE, value.lockscreenMiniPlayerBackgroundMode)
         .putFloat(KEY_LOCKSCREEN_MINI_PLAYER_WIDTH, value.lockscreenMiniPlayerWidth)
         .putFloat(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT, value.lockscreenMiniPlayerHeight)
+        .putFloat(
+            KEY_LOCKSCREEN_MINI_PLAYER_ARTWORK_CORNER_RADIUS,
+            value.lockscreenMiniPlayerArtworkCornerRadius.coerceIn(0f, 60f),
+        )
         .putBoolean(KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT_RADIUS_MIGRATED, true)
+        .putBoolean(KEY_LOCKSCREEN_WIDGET_ENABLED, value.lockscreenWidgetEnabled)
+        .putString(KEY_LOCKSCREEN_WIDGET_DEVICE_NAME, value.lockscreenWidgetDeviceName.take(64))
+        .putInt(
+            KEY_LOCKSCREEN_WIDGET_ITEMS,
+            (value.lockscreenWidgetItems and LOCKSCREEN_WIDGET_ALL_ITEMS)
+                .takeIf { it != 0 } ?: LOCKSCREEN_WIDGET_DEFAULT_ITEMS,
+        )
+        .putString(KEY_LOCKSCREEN_WIDGET_ORDER, value.lockscreenWidgetOrder.take(47))
+        .putLong(KEY_LOCKSCREEN_WIDGET_PREVIEW_VERSION, value.lockscreenWidgetPreviewVersion)
+        .putInt(
+            KEY_LOCKSCREEN_WIDGET_COMBINATION,
+            value.lockscreenWidgetCombination.coerceIn(
+                LOCKSCREEN_WIDGET_COMBINATION_ONE,
+                LOCKSCREEN_WIDGET_COMBINATION_TWO,
+            ),
+        )
+        .putInt(
+            KEY_LOCKSCREEN_WIDGET_BATTERY_MATERIAL_MODE,
+            value.lockscreenWidgetBatteryMaterialMode.coerceIn(
+                LOCKSCREEN_WIDGET_BATTERY_MATERIAL_PURE,
+                LOCKSCREEN_WIDGET_BATTERY_MATERIAL_SOFT,
+            ),
+        )
+        .putInt(
+            KEY_LOCKSCREEN_WIDGET_COLOR_MODE,
+            value.lockscreenWidgetColorMode.coerceIn(
+                LOCKSCREEN_WIDGET_COLOR_LIGHT,
+                LOCKSCREEN_WIDGET_COLOR_AUTO,
+            ),
+        )
+        .putBoolean(
+            KEY_LOCKSCREEN_WIDGET_NOTIFICATION_AVOID,
+            value.lockscreenWidgetNotificationAvoid,
+        )
+        .putInt(
+            KEY_LOCKSCREEN_WIDGET_SIGNATURE_TYPE,
+            value.lockscreenWidgetSignatureType.coerceIn(
+                LOCKSCREEN_WIDGET_SIGNATURE_NONE,
+                LOCKSCREEN_WIDGET_SIGNATURE_VECTOR,
+            ),
+        )
+        .putLong(KEY_LOCKSCREEN_WIDGET_SIGNATURE_VERSION, value.lockscreenWidgetSignatureVersion)
+        .putInt(KEY_LOCKSCREEN_WIDGET_SIGNATURE_COLOR, value.lockscreenWidgetSignatureColor)
+        .putInt(KEY_LOCKSCREEN_WIDGET_SIGNATURE_SCALE, value.lockscreenWidgetSignatureScale.coerceIn(25, 200))
+        .putBoolean(KEY_LOCKSCREEN_WIDGET_SIGNATURE_BACKGROUND, value.lockscreenWidgetSignatureBackground)
         .putInt(KEY_MINI_PLAYER_PURE_COLOR, value.miniPlayerPureColor)
         .putInt(KEY_MINI_PLAYER_ADVANCED_MATERIAL_COLOR, value.miniPlayerAdvancedMaterialColor)
         .putInt(KEY_MINI_PLAYER_ADVANCED_MATERIAL_OPACITY, value.miniPlayerAdvancedMaterialOpacity)
@@ -879,6 +1306,47 @@ private fun SharedPreferences.write(value: HookSettings) {
         .putBoolean(KEY_HIDE_STATUS_BAR_WIFI_STANDARD, value.hideStatusBarWifiStandard)
         .putBoolean(KEY_HIDE_STATUS_BAR_CLOCK_TEXT, value.hideStatusBarClockText)
         .putBoolean(KEY_HIDE_STATUS_BAR_NETWORK_ACTIVITY, value.hideStatusBarNetworkActivity)
+        .putBoolean(KEY_STACKED_MOBILE_SIGNAL_ENABLED, value.stackedMobileSignalEnabled)
+        .putFloat(KEY_STACKED_MOBILE_SIGNAL_SCALE, value.stackedMobileSignalScale.coerceIn(0.1f, 3f))
+        .putFloat(
+            KEY_STACKED_MOBILE_SIGNAL_VERTICAL_OFFSET,
+            value.stackedMobileSignalVerticalOffset.coerceIn(-8f, 8f),
+        )
+        .putFloat(
+            KEY_STACKED_MOBILE_SIGNAL_LEFT_MARGIN,
+            value.stackedMobileSignalLeftMargin.coerceIn(-8f, 8f),
+        )
+        .putFloat(
+            KEY_STACKED_MOBILE_SIGNAL_RIGHT_MARGIN,
+            value.stackedMobileSignalRightMargin.coerceIn(-8f, 8f),
+        )
+        .putInt(KEY_MOBILE_SIGNAL_HIDE_MODE, value.mobileSignalHideMode.coerceIn(0, 2))
+        .putInt(KEY_MOBILE_NETWORK_TYPE_MODE, value.mobileNetworkTypeMode.coerceIn(0, 1))
+        .putInt(KEY_MOBILE_NETWORK_TYPE_POSITION, value.mobileNetworkTypePosition.coerceIn(0, 1))
+        .putInt(KEY_MOBILE_NETWORK_TYPE_DISPLAY_LOGIC, value.mobileNetworkTypeDisplayLogic.coerceIn(0, 1))
+        .putString(KEY_MOBILE_NETWORK_TYPE_CUSTOM_TEXT, value.mobileNetworkTypeCustomText.take(128))
+        .putBoolean(KEY_MOBILE_NETWORK_TYPE_SHRINK_5GA_A, value.mobileNetworkTypeShrink5gaA)
+        .putFloat(KEY_MOBILE_NETWORK_TYPE_SCALE, value.mobileNetworkTypeScale.coerceIn(0.1f, 3f))
+        .putFloat(
+            KEY_MOBILE_NETWORK_TYPE_VERTICAL_OFFSET,
+            value.mobileNetworkTypeVerticalOffset.coerceIn(-8f, 8f),
+        )
+        .putFloat(
+            KEY_MOBILE_NETWORK_TYPE_LEFT_MARGIN,
+            value.mobileNetworkTypeLeftMargin.coerceIn(-8f, 8f),
+        )
+        .putFloat(
+            KEY_MOBILE_NETWORK_TYPE_RIGHT_MARGIN,
+            value.mobileNetworkTypeRightMargin.coerceIn(-8f, 8f),
+        )
+        .putBoolean(KEY_STATUS_BAR_SCALE_ADJUSTMENT_MIGRATED, true)
+        .putBoolean(KEY_STATUS_BAR_SCALE_ABSOLUTE_MIGRATED, true)
+        .putBoolean(KEY_STATUS_BAR_SCALE_ABSOLUTE_MIGRATED_V2, true)
+        .putBoolean(KEY_SYSTEM_UPDATE_DISABLED, value.systemUpdateDisabled)
+        .putBoolean(KEY_SYSTEM_UPDATE_OTA_LIMIT_REMOVED, value.systemUpdateOtaLimitRemoved)
+        .putBoolean(KEY_SYSTEM_UPDATE_VERSION_SPOOF_ENABLED, value.systemUpdateVersionSpoofEnabled)
+        .putString(KEY_SYSTEM_UPDATE_VERSION, value.systemUpdateVersion.take(128))
+        .putString(KEY_SYSTEM_UPDATE_SOTA_VERSION, value.systemUpdateSotaVersion.take(128))
         .putString(KEY_THEME_MODE, value.themeMode)
         .putString(KEY_NAVIGATION_STYLE, value.navigationStyle)
         .putString(KEY_NAVIGATION_LABEL_MODE, value.navigationLabelMode)

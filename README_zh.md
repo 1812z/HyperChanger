@@ -8,14 +8,17 @@
 
 <p align="center">
   <a href="README.md">English</a> |
-  <a href="https://github.com/ColdP/HyperChanger/releases">发布版本</a>
+  <a href="https://github.com/ColdP/HyperChanger/releases">发布版本</a> |
+  <a href="https://t.me/HyperChanger">Telegram 群组</a>
 </p>
+
+<p align="center"><strong>加入 Telegram 群组：</strong> <a href="https://t.me/HyperChanger">https://t.me/HyperChanger</a></p>
 
 <p align="center">
   <img src="https://img.shields.io/github/v/release/ColdP/HyperChanger?style=flat-square" alt="发布版本">
   <img src="https://img.shields.io/badge/Platform-Android-green?style=flat-square&logo=android" alt="平台">
   <img src="https://img.shields.io/badge/minSdk-33-blue?style=flat-square" alt="最低 SDK">
-  <img src="https://img.shields.io/badge/License-MIT-yellow?style=flat-square" alt="许可证">
+  <img src="https://img.shields.io/badge/License-Apache--2.0-yellow?style=flat-square" alt="许可证">
 </p>
 
 ---
@@ -46,11 +49,24 @@ HyperChanger 是一个实验性的社区开发 LSPosed 模块，与小米无任�
 - 控制部分锁屏效果，包括充电文本和快捷方式外观。
 - 在应用全局主题后保持系统界面的柔光玻璃效果。
 - 解除息屏时钟“玻璃”和“叠加”材质被 OTA 转换限制。
+- 新增锁屏小组件编辑器，可组合天气、电量、日出日落、步数、闹钟、日程和自定义签名图片，支持拖拽排序及布局、颜色、材质调节。
+- 自定义状态栏双排信号、网络类型文本、图标显示逻辑、缩放、位置和边距。
 - 修改设置后，可从应用内重启各个已选择作用域的进程。
 
 ### 超级小爱输入法
 
-- 全局启用搜索页使用的特殊输入法外观。
+- 解除部分黑名单词库、剪贴板、AI 与语音安全限制。
+- 调节键盘柔光玻璃外观、颜色、圆角、透明度和模糊度。
+
+### 系统更新与兼容性
+
+- 禁用系统更新、移除 OTA 限制，并可自定义系统版本与 SOTA 版本显示。
+- 启用 Hook 前检测 HyperOS 兼容性，并在应用内查看免责声明与许可证信息。
+
+### 多语言与预设
+
+- 内置中文、英文和日文语言包。
+- 支持语言包导入、导出与编辑，并可通过 JSON 或二维码交换完整设置预设。
 
 ### 相机与相册
 
@@ -83,6 +99,8 @@ HyperChanger 依赖小米系统包的实现细节。测试新的系统构建版�
 | Hyper 相册插件 | `com.hyper.gallery.plugin` |
 | 媒体编辑器 | `com.miui.mediaeditor` |
 | 超级小爱输入法 | `com.xiaomi.type` |
+| 小爱短语 | `com.miui.phrase` |
+| 系统更新 | `com.android.updater` |
 
 部分包在某些设备上并不存在。LSPosed 只会在已安装且已选中的作用域内激活模块。
 
@@ -154,6 +172,7 @@ HyperChanger/
 |   `-- src/main/resources/  LSPosed 元数据与作用域
 |-- gradle/                  Gradle Wrapper 文件
 |-- CONTRIBUTING_zh.md
+|-- NOTICE
 `-- LICENSE
 ```
 
@@ -163,4 +182,4 @@ HyperChanger/
 
 ## 许可证
 
-HyperChanger 基于 [MIT License](LICENSE) 开源。
+HyperChanger 基于 [Apache License 2.0](LICENSE) 开源；历史 MIT 授权致敬说明请参阅 [NOTICE](NOTICE)。

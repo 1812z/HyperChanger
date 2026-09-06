@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.os4.systemuihook
 
 import android.content.ContentProvider
@@ -100,7 +102,10 @@ class SettingsAppearanceProvider : ContentProvider() {
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
 
     private fun appearanceFile(slot: String): File {
-        require(slot == APPEARANCE_SLOT_HOME || slot == APPEARANCE_SLOT_DEVICE || slot == APPEARANCE_SLOT_LOGO || slot == APPEARANCE_SLOT_DEVICE_IMAGE || slot == APPEARANCE_SLOT_CUSTOM_DEVICE_LOGO || slot == APPEARANCE_SLOT_STYLE1_UPDATE_BACKGROUND || slot == APPEARANCE_SLOT_STYLE2_DEVICE_IMAGE || slot == APPEARANCE_SLOT_STYLE2_CUSTOM_DEVICE_LOGO || slot == APPEARANCE_SLOT_STYLE2_UPDATE_BACKGROUND)
+        require(slot == APPEARANCE_SLOT_HOME || slot == APPEARANCE_SLOT_DEVICE || slot == APPEARANCE_SLOT_LOGO || slot == APPEARANCE_SLOT_DEVICE_IMAGE || slot == APPEARANCE_SLOT_CUSTOM_DEVICE_LOGO || slot == APPEARANCE_SLOT_STYLE1_UPDATE_BACKGROUND || slot == APPEARANCE_SLOT_STYLE2_DEVICE_IMAGE || slot == APPEARANCE_SLOT_STYLE2_CUSTOM_DEVICE_LOGO || slot == APPEARANCE_SLOT_STYLE2_UPDATE_BACKGROUND || slot == LOCKSCREEN_WIDGET_SIGNATURE_SLOT)
+        if (slot == LOCKSCREEN_WIDGET_SIGNATURE_SLOT) {
+            return File(File(requireContext().filesDir, "lockscreen_widget"), "signature.bin")
+        }
         return File(File(requireContext().filesDir, "settings_appearance"), "$slot.bin")
     }
 

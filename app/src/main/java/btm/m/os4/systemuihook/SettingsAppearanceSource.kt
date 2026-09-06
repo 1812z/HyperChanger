@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.os4.systemuihook
 
 import android.content.Context
 import android.net.Uri
+import android.os.SystemClock
+import java.util.concurrent.ConcurrentHashMap
 
 data class SettingsAppearanceSource(
     val slot: String,
@@ -79,6 +83,14 @@ fun SettingsAppearanceSource.style2TextVerticalOffsetForAlignment(): Int = when 
 }
 
 object SettingsAppearanceSources {
+    private data class CacheEntry(val source: SettingsAppearanceSource, val loadedAt: Long)
+
+    // Settings appearance hooks run on the Settings main thread. Avoid doing
+    // provider IPC for every resource and view callback, while keeping updates
+    // visible shortly after the module settings are changed.
+    private const val CACHE_TTL_MS = 750L
+    private val cache = ConcurrentHashMap<String, CacheEntry>()
+
     fun uri(slot: String) = Uri.Builder()
         .scheme("content")
         .authority(SETTINGS_APPEARANCE_AUTHORITY)
@@ -86,8 +98,13 @@ object SettingsAppearanceSources {
         .build()
 
     fun query(context: Context, slot: String): SettingsAppearanceSource {
+        val key = "${context.packageName}:$slot"
+        val now = SystemClock.elapsedRealtime()
+        cache[key]?.let { entry ->
+            if (now - entry.loadedAt < CACHE_TTL_MS) return entry.source
+        }
         val uri = uri(slot)
-        return runCatching {
+        val source = runCatching {
             context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                 if (!cursor.moveToFirst()) return@use null
                 val mime = cursor.string(SettingsAppearanceProvider.COLUMN_MIME)
@@ -151,6 +168,17 @@ object SettingsAppearanceSources {
                 )
             } ?: missing(slot, uri)
         }.getOrElse { missing(slot, uri) }
+        cache[key] = CacheEntry(source, now)
+        return source
+    }
+
+    fun invalidate(context: Context? = null, slot: String? = null) {
+        when {
+            context == null && slot == null -> cache.clear()
+            context != null && slot != null -> cache.remove("${context.packageName}:$slot")
+            context != null -> cache.keys.removeIf { it.startsWith("${context.packageName}:") }
+            slot != null -> cache.keys.removeIf { it.endsWith(":$slot") }
+        }
     }
 
     private fun missing(slot: String, uri: Uri) = SettingsAppearanceSource(

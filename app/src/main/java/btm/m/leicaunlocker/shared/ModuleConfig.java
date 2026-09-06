@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.leicaunlocker.shared;
 
 import java.util.Map;
@@ -14,6 +16,7 @@ public final class ModuleConfig {
     public static final String KEY_LEICA_UI = "leica_ui";
     public static final String KEY_PRESERVE_NATIVE_FOCAL_LENGTHS = "preserve_native_focal_lengths";
     public static final String KEY_GALLERY_ALL_WATERMARKS = "gallery_all_watermarks";
+    public static final String KEY_INSTANT_MODE = "instant_mode";
 
     public static final String[] TARGET_PACKAGES = {
             TARGET_PACKAGE,
@@ -62,7 +65,13 @@ public final class ModuleConfig {
     }
 
     public static String propertyOverride(String key, boolean leicaUi) {
-        if (leicaUi && "ro.theme_customize".equals(key)) {
+        if ("ro.product.camera.livephoto.support".equals(key)) {
+            return "63";
+        }
+        if (!leicaUi) {
+            return null;
+        }
+        if ("ro.theme_customize".equals(key)) {
             return "LCC";
         }
         if ("ro.boot.product.theme_customize".equals(key)) {
@@ -71,4 +80,3 @@ public final class ModuleConfig {
         return NEZHA_PROPERTIES.get(key);
     }
 }
-

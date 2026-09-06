@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.os4.systemuihook
 
 import android.content.Context
@@ -23,7 +25,6 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowInsets
 import android.view.ViewOutlineProvider
 import android.view.ViewTreeObserver
 import android.view.ViewConfiguration
@@ -52,6 +53,7 @@ internal data class MiniPlayerAppearance(
     val backgroundMode: Int,
     val widthDp: Float,
     val heightDp: Float,
+    val artworkCornerRadiusDp: Float = 12f,
     val pureColor: Int = 0x73000000,
     val advancedColor: Int = 0xFFFFFFFF.toInt(),
     val advancedOpacity: Int = 14,
@@ -570,15 +572,12 @@ internal class LockscreenMiniPlayerController(
             schedulePosition()
             return
         }
-        // Preserve the requested center across parent layout passes.
+        // Preserve the requested center across parent layout passes. The shortcut views are
+        // already positioned by SystemUI above the gesture area, so using an additional bottom
+        // inset here would move the player away from the shortcut row and break their relative
+        // vertical alignment.
         baseTranslationX = centerX - actualWidth / 2f - view.left
-        val safeBottom = bottomSafeDistance()
-        val maxCenterY = host.height - safeBottom - actualHeight / 2f
-        // The shortcut host is only the bottom row (often shorter than the card itself). Allow a
-        // negative local center/translation so the card can rise above that host and clear the
-        // navigation gesture area instead of being clamped flush to the physical display edge.
-        val adjustedCenterY = min(centerY, maxCenterY)
-        baseTranslationY = adjustedCenterY - actualHeight / 2f - view.top
+        baseTranslationY = centerY - actualHeight / 2f - view.top
         view.translationX = baseTranslationX
         view.translationY = baseTranslationY + customizationLift
         positionLyrics(view, leftLocation, rightLocation, hostLocation)
@@ -627,24 +626,12 @@ internal class LockscreenMiniPlayerController(
         view.translationY = lyricsBaseTranslationY + customizationLift
     }
 
-    private fun bottomSafeDistance(): Float {
-        val systemBottomInset = runCatching {
-            host.rootWindowInsets?.getInsets(
-                WindowInsets.Type.navigationBars() or WindowInsets.Type.mandatorySystemGestures(),
-            )?.bottom ?: 0
-        }.getOrDefault(0)
-        return max(dp(MINI_PLAYER_MIN_BOTTOM_MARGIN_DP).toFloat(),
-            systemBottomInset + dp(MINI_PLAYER_INSET_EXTRA_DP).toFloat())
-    }
-
     private fun dp(value: Float): Int = (value * context.resources.displayMetrics.density + .5f).toInt()
 
     private companion object {
         const val MEDIA_PRESENTATION_ENTER_DURATION_MS = 260L
         const val MEDIA_PRESENTATION_EXIT_DURATION_MS = 220L
         const val LYRICS_PLAYER_GAP_DP = 12f
-        const val MINI_PLAYER_MIN_BOTTOM_MARGIN_DP = 24f
-        const val MINI_PLAYER_INSET_EXTRA_DP = 8f
     }
 }
 
@@ -1039,7 +1026,7 @@ private class LockscreenMiniPlayerView(context: Context) : FrameLayout(context) 
         if (lastAppearance != appearance) {
             lastAppearance = appearance
             applyAppearance(appearance, applyPlatformMaterial)
-            updateGeometry(appearance.heightDp)
+            updateGeometry(appearance.heightDp, appearance.artworkCornerRadiusDp)
         }
         this.title.text = title
         this.artist.text = artist
@@ -1072,7 +1059,7 @@ private class LockscreenMiniPlayerView(context: Context) : FrameLayout(context) 
         }
     }
 
-    private fun updateGeometry(heightDp: Float) {
+    private fun updateGeometry(heightDp: Float, artworkCornerRadiusDp: Float) {
         val height = dp(heightDp * 2f).coerceAtLeast(dp(48))
         val verticalPadding = max(dp(7), height / 9)
         val artworkSize = ((height - verticalPadding * 2) * .75f).toInt().coerceAtLeast(dp(24))
@@ -1088,9 +1075,11 @@ private class LockscreenMiniPlayerView(context: Context) : FrameLayout(context) 
             leftMargin = horizontalPadding + artworkSize + max(dp(10), height / 8)
             rightMargin = toggleSize + max(dp(10), verticalPadding)
         }
+        val artworkRadius = dp(artworkCornerRadiusDp).coerceIn(0, artworkSize / 2).toFloat()
+        artwork.background = rounded(Color.rgb(55, 55, 55), artworkRadius)
         artwork.outlineProvider = object : ViewOutlineProvider() {
             override fun getOutline(view: View, outline: Outline) {
-                outline.setRoundRect(0, 0, view.width, view.height, artworkSize * .2f)
+                outline.setRoundRect(0, 0, view.width, view.height, artworkRadius)
             }
         }
         invalidateOutline()

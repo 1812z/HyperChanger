@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.os4.systemuihook
 
 import android.content.SharedPreferences
@@ -19,20 +21,42 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 
 /** Hooks only Settings' presentation models; no system property is written. */
 class SettingsDeviceModule : XposedModule() {
+    private var settingsApplicationContext: Context? = null
+
     override fun onPackageLoaded(param: PackageLoadedParam) {
+        if (!OsCompatibility.areHooksAllowed()) return
         if (param.packageName != SETTINGS_PACKAGE) return
+        settingsApplicationContext = currentApplicationContext()
         val preferences = getRemotePreferences(DEVICE_PROFILE_PREFERENCES)
+        val appearance = getRemotePreferences(SETTINGS_APPEARANCE_PREFERENCES)
         runCatching {
             installCardBindingHook(param.defaultClassLoader, preferences)
             installDirectDetailHooks(param.defaultClassLoader, preferences)
             installCpuIconHook(param.defaultClassLoader, preferences)
-            installAppearanceHooks(param.defaultClassLoader)
-            installPersistentLogoHooks()
-            installLogoResourceHooks()
-            installCardColorResourceHooks()
-            installCardFinalBackgroundHooks()
-            installCardMaterialHooks()
-            installPersistentTextColorHooks()
+            // These methods are global framework hooks in the Settings process.
+            // Install only the groups that can currently change a view. This is
+            // important because Settings calls these methods during every bind.
+            val homeAppearance = appearance.getBoolean("home_enabled", false)
+            val deviceBackground = appearance.getBoolean("device_enabled", false)
+            val customDeviceInterface = appearance.getBoolean("tutorial_card_enabled", false) ||
+                appearance.getInt("device_interface_style", DEVICE_INTERFACE_STYLE_SYSTEM) != DEVICE_INTERFACE_STYLE_SYSTEM
+            val deviceAppearance = deviceBackground || customDeviceInterface
+            val logoAppearance = appearance.getInt("logo_mode", LOGO_MODE_SYSTEM) != LOGO_MODE_SYSTEM
+            val lightCards = appearance.getInt("light_card_opacity", 100) < 100
+            val forcedText = appearance.getInt("home_font", 0) != 0 || appearance.getInt("device_font", 0) != 0
+            if (homeAppearance || deviceAppearance) {
+                installAppearanceHooks(param.defaultClassLoader, homeAppearance, deviceAppearance)
+            }
+            if (logoAppearance) {
+                installPersistentLogoHooks()
+                installLogoResourceHooks()
+            }
+            if (lightCards) {
+                installCardColorResourceHooks()
+                installCardFinalBackgroundHooks()
+                installCardMaterialHooks()
+            }
+            if (forcedText) installPersistentTextColorHooks()
             log(Log.INFO, TAG, "Installed Settings device-profile hooks")
         }.onFailure { error ->
             log(Log.ERROR, TAG, "Could not install Settings device-profile hooks", error)
@@ -327,15 +351,18 @@ class SettingsDeviceModule : XposedModule() {
         }
     }
 
-    private fun currentApplicationContext(): Context? = runCatching {
-        Class.forName("android.app.ActivityThread")
-            .getMethod("currentApplication")
-            .invoke(null) as? Context
-    }.getOrNull()
+    private fun currentApplicationContext(): Context? {
+        settingsApplicationContext?.let { return it }
+        return runCatching {
+            Class.forName("android.app.ActivityThread")
+                .getMethod("currentApplication")
+                .invoke(null) as? Context
+        }.getOrNull()?.also { settingsApplicationContext = it }
+    }
 
-    private fun installAppearanceHooks(classLoader: ClassLoader) {
-        installActivityAppearanceHooks(classLoader)
-        runCatching {
+    private fun installAppearanceHooks(classLoader: ClassLoader, homeEnabled: Boolean, deviceEnabled: Boolean) {
+        installActivityAppearanceHooks(classLoader, homeEnabled, deviceEnabled)
+        if (homeEnabled) runCatching {
             val home = classLoader.loadClass(MIUI_SETTINGS)
             hookLifecycle(home, "home", after = { target ->
                 (target as? Activity)?.let(SettingsAppearanceApplier::applyHome)
@@ -344,7 +371,7 @@ class SettingsDeviceModule : XposedModule() {
             })
         }.onFailure { error -> log(Log.WARN, TAG, "Could not hook Settings home appearance", error) }
 
-        runCatching {
+        if (deviceEnabled) runCatching {
             val settingsFragment = classLoader.loadClass("com.android.settings.SettingsFragment")
             settingsFragment.declaredMethods.firstOrNull {
                 it.name == "onViewCreated" && it.parameterCount == 2
@@ -405,8 +432,12 @@ class SettingsDeviceModule : XposedModule() {
         }.onFailure { error -> log(Log.WARN, TAG, "Could not hook My Device appearance", error) }
     }
 
-    private fun installActivityAppearanceHooks(classLoader: ClassLoader) {
-        val activityTypes = listOf(MIUI_SETTINGS, SUB_SETTINGS, MY_DEVICE_INFO_ACTIVITY)
+    private fun installActivityAppearanceHooks(classLoader: ClassLoader, homeEnabled: Boolean, deviceEnabled: Boolean) {
+        val activityTypes = buildList {
+            if (homeEnabled) add(MIUI_SETTINGS)
+            if (deviceEnabled) add(SUB_SETTINGS)
+            if (deviceEnabled) add(MY_DEVICE_INFO_ACTIVITY)
+        }
         activityTypes.forEach { className ->
             runCatching {
                 val type = classLoader.loadClass(className)
@@ -513,11 +544,12 @@ class SettingsDeviceModule : XposedModule() {
             .setExceptionMode(ExceptionMode.PROTECTIVE)
             .setId("settings-device-profile:data-list")
             .intercept { chain ->
+                val result = chain.proceed()
                 val profile = preferences.toDeviceProfileSettings()
                 if (profile.enabled) {
                     applyDataListOverride(chain.thisObject, chain.getArg(0), profile)
                 }
-                chain.proceed()
+                result
             }
         val bind = adapter.declaredMethods.firstOrNull {
             it.name == "onBindViewHolder" && it.parameterCount == 2
@@ -526,11 +558,12 @@ class SettingsDeviceModule : XposedModule() {
             .setExceptionMode(ExceptionMode.PROTECTIVE)
             .setId("settings-device-profile:bind-card")
             .intercept { chain ->
+                val result = chain.proceed()
                 val profile = preferences.toDeviceProfileSettings()
                 if (profile.enabled) {
                     applyCardOverride(chain.thisObject, chain.getArg(1) as? Int ?: -1, profile)
                 }
-                chain.proceed()
+                result
             }
     }
 
@@ -651,7 +684,7 @@ class SettingsDeviceModule : XposedModule() {
     }
 
     private fun valueForDetail(key: String, title: String, profile: DeviceProfileSettings): String? {
-        if (key == "cpu_item") return profile.processor.takeIf(String::isNotBlank)
+        if (key == "cpu_item") return profile.detailProcessor.takeIf(String::isNotBlank)
         if (key == "miui_version") return profile.osVersion.takeIf(String::isNotBlank)
         if (key == "firmware_version") return profile.androidVersion.takeIf(String::isNotBlank)
         if (key == "kernel_version") return profile.kernel.takeIf(String::isNotBlank)

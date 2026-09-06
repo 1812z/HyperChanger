@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -16,8 +19,8 @@ android {
         applicationId = "btm.m.os4.systemuihook"
         minSdk = 33
         targetSdk = 35
-        versionCode = 10001
-        versionName = "1.0.1"
+        versionCode = 10100
+        versionName = "1.1.0"
     }
 
     signingConfigs {

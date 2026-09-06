@@ -1,36 +1,52 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.os4.systemuihook
 
+import android.content.Context
 import android.content.SharedPreferences
 import android.app.KeyguardManager
 import android.content.res.ColorStateList
 import android.content.res.Resources
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorFilter
 import android.graphics.Outline
 import android.graphics.Paint
+import android.graphics.PixelFormat
 import android.graphics.Point
+import android.graphics.Rect
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.provider.Settings
+import android.telephony.SubscriptionManager
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.RelativeSizeSpan
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
-import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
+import btm.m.xiaoaihook.SuperXiaoAiInputHook
 import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.LinkedHashMap
 import java.util.WeakHashMap
+import kotlin.math.roundToInt
 
 private enum class NotificationMaterialType { NORMAL, MEDIA, FOCUS }
 
@@ -42,11 +58,141 @@ private data class VolumeTuningSnapshot(
     val viewCount: Int,
 )
 
+private data class StackedMobileSubscription(
+    val slot: Int,
+    val dataSim: Boolean,
+    val signalLevel: Int,
+)
+
+private class StackedMobilePresentation(
+    val root: ViewGroup,
+    var signal: ImageView,
+    var subscriptionId: Int,
+) {
+    var attachListenerInstalled = false
+    var refreshPending = false
+    var independentType: TextView? = null
+    var mobileSignalContainer: ViewGroup? = null
+    var mobileGroup: ViewGroup? = null
+    var networkTypeView: TextView? = null
+    var networkTypeSource: Any? = null
+    var dualContainer: FrameLayout? = null
+    var dualSignal: ImageView? = null
+    var savedDualTranslationY: Float? = null
+    var savedDualMargins: IntArray? = null
+    var savedRootVisibility: Int? = null
+    var rootHiddenByStacked = false
+    var savedIndependentView: TextView? = null
+    var savedIndependentTranslationY: Float? = null
+    var savedIndependentMargins: IntArray? = null
+    var savedIndependentParent: ViewGroup? = null
+    var savedIndependentIndex: Int = -1
+    var savedIndependentLayoutParams: ViewGroup.LayoutParams? = null
+}
+
+/**
+ * The Hyper Helper default stacked icon: a full four-column signal on top and
+ * a four-dot signal below.  It deliberately has its own geometry instead of
+ * squeezing two unrelated SystemUI drawables into one ImageView.
+ */
+private class StackedMobileDrawable(
+    private val upperLevel: Int,
+    private val lowerLevel: Int,
+) : Drawable() {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var drawableAlpha = 0xFF
+    private var tint: ColorStateList? = null
+    private var drawableColorFilter: ColorFilter? = null
+
+    override fun draw(canvas: Canvas) {
+        val bounds = bounds
+        val width = bounds.width().toFloat()
+        val height = bounds.height().toFloat()
+        if (width <= 0f || height <= 0f) return
+
+        // Coordinates match XiaomiHelper's Signal-HyperOS3-Stacked.svg viewBox.
+        val columnLeft = 0.108f
+        val columnWidth = 0.124f
+        val columnGap = 0.0886f
+        val topRowBottom = 0.5985f
+        val topRowTops = floatArrayOf(0.4635f, 0.3907f, 0.288f, 0.1987f)
+        val lowerRowTop = 0.6661f
+        val lowerRowBottom = 0.8013f
+        val corner = minOf(width * 0.027f, height * 0.027f)
+        paint.color = tint?.getColorForState(state, Color.WHITE) ?: Color.WHITE
+        paint.colorFilter = drawableColorFilter
+
+        drawSignalRow(canvas, upperLevel, columnLeft, columnWidth, columnGap, topRowTops, topRowBottom, corner)
+        drawSignalRow(
+            canvas,
+            lowerLevel,
+            columnLeft,
+            columnWidth,
+            columnGap,
+            floatArrayOf(lowerRowTop, lowerRowTop, lowerRowTop, lowerRowTop),
+            lowerRowBottom,
+            corner,
+        )
+    }
+
+    private fun drawSignalRow(
+        canvas: Canvas,
+        level: Int,
+        columnLeft: Float,
+        columnWidth: Float,
+        columnGap: Float,
+        tops: FloatArray,
+        bottom: Float,
+        corner: Float,
+    ) {
+        val bounds = bounds
+        val width = bounds.width().toFloat()
+        val height = bounds.height().toFloat()
+        for (column in 0 until 4) {
+            val left = bounds.left + (columnLeft + column * (columnWidth + columnGap)) * width
+            val top = bounds.top + tops[column] * height
+            val right = left + columnWidth * width
+            val rowBottom = bounds.top + bottom * height
+            paint.alpha = if (column < level.coerceIn(0, 4)) drawableAlpha else (drawableAlpha * 0.35f).toInt()
+            canvas.drawRoundRect(left, top, right, rowBottom, corner, corner, paint)
+        }
+    }
+
+    override fun setAlpha(alpha: Int) {
+        drawableAlpha = alpha
+        invalidateSelf()
+    }
+
+    override fun setColorFilter(colorFilter: ColorFilter?) {
+        drawableColorFilter = colorFilter
+        invalidateSelf()
+    }
+
+    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+
+    override fun setTintList(tint: ColorStateList?) {
+        this.tint = tint
+        invalidateSelf()
+    }
+
+    override fun onStateChange(state: IntArray): Boolean {
+        if (tint?.isStateful == true) invalidateSelf()
+        return tint?.isStateful == true
+    }
+
+    override fun isStateful(): Boolean = tint?.isStateful == true
+}
+
 class HyperSystemUiModule : XposedModule() {
     internal fun installHook(member: java.lang.reflect.Executable) = hook(member)
 
     override fun onPackageLoaded(param: PackageLoadedParam) {
+        if (!OsCompatibility.areHooksAllowed()) return
         if (param.packageName !in SYSTEM_UI_TARGETS) return
+        if (param.packageName == SUPER_XIAOAI_IME || param.packageName == SUPER_XIAOAI_PHRASE) {
+            installSuperXiaoAiHooks(param.packageName, param.defaultClassLoader)
+            return
+        }
         runCatching {
             val preferences = getRemotePreferences(REMOTE_PREFERENCE_GROUP)
             when (param.packageName) {
@@ -97,6 +243,14 @@ class HyperSystemUiModule : XposedModule() {
                         installLockscreenMediaNotificationHook(param.defaultClassLoader, preferences)
                         lockscreenNotificationHookInstalled = true
                     }
+                    if (param.packageName == SYSTEM_UI && !lockscreenClockDateFollowHookInstalled) {
+                        installLockscreenClockDateFollowHook(param.defaultClassLoader)
+                        lockscreenClockDateFollowHookInstalled = true
+                    }
+                    if (param.packageName == SYSTEM_UI && !systemUiLockscreenClockColonHookInstalled) {
+                        installLockscreenClockColonHook(param.defaultClassLoader, preferences, "systemui")
+                        systemUiLockscreenClockColonHookInstalled = true
+                    }
                     if (param.packageName == SYSTEM_UI && !fingerprintIconHookInstalled) {
                         installFingerprintIconVisualHook(param.defaultClassLoader, preferences)
                         // This optional visual hook varies between HyperOS builds.  Do not
@@ -121,12 +275,16 @@ class HyperSystemUiModule : XposedModule() {
                         installLockscreenShortcutGlassHook(param.defaultClassLoader, preferences)
                         lockscreenShortcutGlassHookInstalled = true
                     }
+                    if (param.packageName == SYSTEM_UI && !lockscreenWidgetSceneVisibilityHookInstalled) {
+                        installLockscreenWidgetSceneVisibilityHooks(param.defaultClassLoader)
+                        lockscreenWidgetSceneVisibilityHookInstalled = true
+                    }
                     if (param.packageName == SYSTEM_UI && !lockscreenPinCircleBackgroundHookInstalled) {
                         installLockscreenPinCircleBackgroundHook(param.defaultClassLoader, preferences)
                         lockscreenPinCircleBackgroundHookInstalled = true
                     }
                     if (param.packageName == SYSTEM_UI && !shadeMaterialHooksInstalled) {
-                        installShadeMaterialHooks(preferences)
+                        installShadeMaterialHooks(preferences, param.defaultClassLoader)
                         shadeMaterialHooksInstalled = true
                     }
                     if (param.packageName == SYSTEM_UI && !softGlassThemeSystemUiHookInstalled) {
@@ -144,6 +302,10 @@ class HyperSystemUiModule : XposedModule() {
                     if (param.packageName == SYSTEM_UI && !statusBarVisibilityHookInstalled) {
                         installStatusBarVisibilityHook(param.defaultClassLoader, preferences)
                         statusBarVisibilityHookInstalled = true
+                    }
+                    if (param.packageName == SYSTEM_UI && !stackedMobileSignalHookInstalled) {
+                        installStackedMobileSignalHook(param.defaultClassLoader, preferences)
+                        stackedMobileSignalHookInstalled = true
                     }
                     if (param.packageName == SYSTEM_UI && !systemUiClockMaterialLimitHookInstalled) {
                         installClockMaterialLimitHook(param.defaultClassLoader, preferences)
@@ -164,11 +326,13 @@ class HyperSystemUiModule : XposedModule() {
                         installClockMaterialLimitHook(param.defaultClassLoader, preferences)
                         aodClockMaterialLimitHookInstalled = true
                     }
-                }
-                SUPER_XIAOAI_IME -> {
-                    if (!superXiaoAiAppearanceHooksInstalled) {
-                        installSuperXiaoAiAppearanceHooks(param.defaultClassLoader, preferences)
-                        superXiaoAiAppearanceHooksInstalled = true
+                    if (!aodLockscreenClockColonHookInstalled) {
+                        installLockscreenClockColonHook(param.defaultClassLoader, preferences, "aod")
+                        aodLockscreenClockColonHookInstalled = true
+                    }
+                    if (!aodLockscreenTemplateLimitHookInstalled) {
+                        installAodLockscreenTemplateLimitHook(param.defaultClassLoader, preferences)
+                        aodLockscreenTemplateLimitHookInstalled = true
                     }
                 }
                 SUBSCREEN_CENTER -> installMusicControlWhitelistHook(param.defaultClassLoader, preferences)
@@ -178,6 +342,14 @@ class HyperSystemUiModule : XposedModule() {
         }.onFailure { error ->
             log(Log.ERROR, TAG, "Could not install hooks for ${param.packageName}", error)
         }
+    }
+
+    private fun installSuperXiaoAiHooks(packageName: String, classLoader: ClassLoader) {
+        SuperXiaoAiInputHook.install(
+            module = this,
+            classLoader = classLoader,
+            phraseProcess = packageName == SUPER_XIAOAI_PHRASE,
+        )
     }
 
     private fun installMusicControlWhitelistHook(
@@ -546,12 +718,25 @@ class HyperSystemUiModule : XposedModule() {
                         view?.resources?.getResourceEntryName(view.id)
                     }.getOrNull()
                     val hideNetworkType = preferences.getBoolean(KEY_HIDE_STATUS_BAR_NETWORK_TYPE, false)
+                    // The old value 2 (hidden) and the new value 0 (hidden) have the
+                    // same behavior. Only value 1 enables the independent label.
+                    val mobileNetworkTypeMode = preferences
+                        .getInt(KEY_MOBILE_NETWORK_TYPE_MODE, 0)
+                        .let { if (it == 1) 1 else 0 }
                     val hideWifiStandard = preferences.getBoolean(KEY_HIDE_STATUS_BAR_WIFI_STANDARD, false)
                     val hideClockText = preferences.getBoolean(KEY_HIDE_STATUS_BAR_CLOCK_TEXT, false)
                     val hideNetworkActivity = preferences.getBoolean(KEY_HIDE_STATUS_BAR_NETWORK_ACTIVITY, false)
+                    val isIndependentMobileType = isIndependentMobileTypeView(view)
+                    val hideSecondaryMobileRoot = isStackedSecondaryMobileRoot(view)
+                    val hideOriginalDualSignal = resourceName == "mobile_signal" &&
+                        shouldHideSystemMobileSignal(view, preferences.getInt(KEY_MOBILE_SIGNAL_HIDE_MODE, 0))
                     val forcedHidden =
+                        hideSecondaryMobileRoot || hideOriginalDualSignal ||
                         ((resourceName == "mobile_type" || resourceName == "mobile_type_single" ||
-                            resourceName == "mobile_special_5G") && hideNetworkType) ||
+                            resourceName == "mobile_special_5G") &&
+                            (hideNetworkType || mobileNetworkTypeMode in 0..1) &&
+                            !(resourceName == "mobile_type_single" &&
+                                isIndependentMobileType && mobileNetworkTypeMode == 1)) ||
                             (resourceName == "wifi_standard" && hideWifiStandard) ||
                             (resourceName in setOf("wifi_activity", "mobile_left_mobile_inout") && hideNetworkActivity) ||
                             (resourceName == "battery_text_digit_view" && hideClockText)
@@ -960,59 +1145,6 @@ class HyperSystemUiModule : XposedModule() {
             log(Log.INFO, TAG, "Installed clock material-limit bypass")
         }.onFailure { error ->
             log(Log.WARN, TAG, "Could not install clock material-limit bypass", error)
-        }
-    }
-
-    private fun installSuperXiaoAiAppearanceHooks(
-        classLoader: ClassLoader,
-        preferences: SharedPreferences,
-    ) {
-        runCatching {
-            val serviceClass = classLoader.loadClass(SUPER_XIAOAI_SERVICE_CLASS)
-            hook(serviceClass.getMethod("onStartInputView", EditorInfo::class.java, Boolean::class.javaPrimitiveType))
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .setId("super-xiaoai-appearance:start-input")
-                .intercept { chain ->
-                    if (!preferences.getBoolean(KEY_SUPER_XIAOAI_GLOBAL_SEARCH_APPEARANCE, false)) {
-                        return@intercept chain.proceed()
-                    }
-                    val editorInfo = chain.getArg(0) as? EditorInfo ?: return@intercept chain.proceed()
-                    val originalPackage = editorInfo.packageName
-                    editorInfo.packageName = QUICK_SEARCH_BOX
-                    try {
-                        chain.proceed()
-                    } finally {
-                        editorInfo.packageName = originalPackage
-                    }
-                }
-
-            val askXiaoAiAction = classLoader.loadClass(SUPER_XIAOAI_ACTIONS_CLASS)
-                .declaredMethods
-                .first { it.name == SUPER_XIAOAI_ASK_ACTION_METHOD && it.parameterCount == 2 }
-            val currentEditorInfo = serviceClass.getMethod(SUPER_XIAOAI_CURRENT_EDITOR_INFO_METHOD)
-            hook(askXiaoAiAction)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .setId("super-xiaoai-appearance:ask-xiaoai")
-                .intercept { chain ->
-                    if (!preferences.getBoolean(KEY_SUPER_XIAOAI_GLOBAL_SEARCH_APPEARANCE, false) ||
-                        chain.getArg(1)?.javaClass?.name != SUPER_XIAOAI_ASK_ACTION_CLASS
-                    ) {
-                        return@intercept chain.proceed()
-                    }
-                    val editorInfo = currentEditorInfo.invoke(chain.getArg(0)) as? EditorInfo
-                        ?: return@intercept chain.proceed()
-                    val originalPackage = editorInfo.packageName
-                    editorInfo.packageName = QUICK_SEARCH_BOX
-                    try {
-                        chain.proceed()
-                    } finally {
-                        editorInfo.packageName = originalPackage
-                    }
-                }
-
-            log(Log.INFO, TAG, "Installed Super XiaoAi global search-appearance hooks")
-        }.onFailure { error ->
-            log(Log.ERROR, TAG, "Could not install Super XiaoAi global search-appearance hooks", error)
         }
     }
 
@@ -1453,8 +1585,11 @@ class HyperSystemUiModule : XposedModule() {
     private fun isDynamicIslandView(view: View): Boolean =
         generateSequence<View>(view) { it.parent as? View }.any { it.javaClass.name.contains("dynamicisland", true) }
 
-    private fun installShadeMaterialHooks(preferences: SharedPreferences) {
+    private fun installShadeMaterialHooks(preferences: SharedPreferences, classLoader: ClassLoader) {
         runCatching {
+            installFocusNotificationMaterialEnforcementHooks(preferences, classLoader)
+            installFocusNotificationBackgroundHook(preferences, classLoader)
+
             val setGlass = View::class.java.getMethod("setMiGlass", FloatArray::class.java)
             hook(setGlass)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
@@ -1464,10 +1599,26 @@ class HyperSystemUiModule : XposedModule() {
                     val view = chain.thisObject as? View
                     val controlCenter = isControlCenterCall()
                     val notification = isNotificationCenterCall()
+                    val normalNotificationMaterial = if (
+                        original != null &&
+                        original.size >= MIN_GLASS_PARAMS_SIZE &&
+                        original.any { it != 0f } &&
+                        shouldUseNormalNotificationMaterial(view, preferences)
+                    ) {
+                        view?.let(::normalNotificationGlassParams)
+                    } else {
+                        null
+                    }
                     val tuning = elementMaterialOverride(preferences, view, controlCenter, notification)
-                    if (original != null && original.size >= MIN_GLASS_PARAMS_SIZE && tuning?.enabled == true) {
+                    if (original != null && original.size >= MIN_GLASS_PARAMS_SIZE &&
+                        (normalNotificationMaterial != null || tuning?.enabled == true)
+                    ) {
                         logControlCenterMaterialHit(view, "glass-material")
-                        chain.proceedWith(chain.thisObject, arrayOf(applyMaterialOverride(original, tuning)))
+                        val material = normalNotificationMaterial ?: original
+                        chain.proceedWith(
+                            chain.thisObject,
+                            arrayOf(if (tuning?.enabled == true) applyMaterialOverride(material, tuning) else material),
+                        )
                     } else {
                         chain.proceed()
                     }
@@ -1560,8 +1711,9 @@ class HyperSystemUiModule : XposedModule() {
                 .setId("notification-row-glass-material-type")
                 .intercept { chain ->
                     val view = chain.thisObject as? View
-                    if (view != null && isNotificationRowBackground(view) &&
-                        !isMediaNotificationView(view) && notificationMaterialEnabled(preferences)
+                    if (view != null && notificationMaterialTarget(view, preferences) &&
+                        (!isMediaNotificationView(view) || (chain.getArg(0) as Int) == 1) &&
+                        notificationMaterialEnabled(preferences)
                     ) {
                         chain.proceedWith(chain.thisObject, arrayOf(1))
                     } else {
@@ -1581,8 +1733,8 @@ class HyperSystemUiModule : XposedModule() {
                     .setId("notification-row-glass-outline")
                     .intercept { chain ->
                         val view = chain.thisObject as? View
-                        if (view != null && isNotificationRowBackground(view) &&
-                            !isMediaNotificationView(view) && notificationMaterialEnabled(preferences)
+                        if (view != null && notificationMaterialTarget(view, preferences) &&
+                            notificationMaterialEnabled(preferences)
                         ) {
                             val flags = chain.getArg(0) as Int
                             val mask = chain.getArg(1) as Int
@@ -1609,8 +1761,8 @@ class HyperSystemUiModule : XposedModule() {
                     .setId("notification-row-glass-sdf-size")
                     .intercept { chain ->
                         val view = chain.thisObject as? View
-                        if (view != null && isNotificationRowBackground(view) &&
-                            !isMediaNotificationView(view) && notificationMaterialEnabled(preferences)
+                        if (view != null && notificationMaterialTarget(view, preferences) &&
+                            notificationMaterialEnabled(preferences)
                         ) {
                             val visibleHeight = notificationVisibleHeight(view)
                             val wantedHeight = chain.getArg(1) as Float
@@ -1674,7 +1826,14 @@ class HyperSystemUiModule : XposedModule() {
                     val view = chain.thisObject as? View
                     val tuning = backgroundMaterialOverride(preferences)
                     val original = chain.getArg(0) as? ArrayList<*>
-                    if (tuning?.enabled == true && tuning.tintEnabled && tuning.tintStrength > 0 &&
+                    val normalBlend = if (original != null) {
+                        normalNotificationBlendPoints(view, preferences)
+                    } else {
+                        null
+                    }
+                    if (normalBlend != null) {
+                        chain.proceedWith(chain.thisObject, arrayOf(normalBlend))
+                    } else if (tuning?.enabled == true && tuning.tintEnabled && tuning.tintStrength > 0 &&
                         original != null && isShadePanelBackgroundCall(view)
                     ) {
                         chain.proceedWith(
@@ -1689,20 +1848,1198 @@ class HyperSystemUiModule : XposedModule() {
         }
     }
 
+    private fun installLockscreenClockColonHook(
+        classLoader: ClassLoader,
+        preferences: SharedPreferences,
+        scope: String,
+    ) {
+        runCatching {
+            val method = classLoader.loadClass(CLOCK_BEAN_CLASS)
+                .getDeclaredMethod(CLOCK_BEAN_IS_COLON_SHOW_METHOD)
+                .apply { isAccessible = true }
+            hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("lockscreen-clock-colon:$scope")
+                .intercept { chain ->
+                    if (preferences.getBoolean(KEY_LOCKSCREEN_CLOCK_COLON_FORCE_VISIBLE, false)) {
+                        true
+                    } else {
+                        chain.proceed()
+                    }
+                }
+            log(Log.INFO, TAG, "Installed lockscreen clock colon hook for $scope")
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Could not install lockscreen clock colon hook for $scope", error)
+        }
+    }
+
+    /**
+     * Builds the compact two-row dual-SIM glyph from the legacy signal state.  The modern binder
+     * supplies the live ImageView that will host it.
+     */
+    private fun installStackedMobileSignalHook(
+        classLoader: ClassLoader,
+        preferences: SharedPreferences,
+    ) {
+        stackedMobilePreferences = preferences
+        val enabled = { preferences.getBoolean(KEY_STACKED_MOBILE_SIGNAL_ENABLED, false) }
+        var hookCount = 0
+
+        runCatching {
+            val controllerClass = classLoader.loadClass(
+                "com.android.systemui.statusbar.connectivity.MobileSignalController",
+            )
+            val notifyListeners = controllerClass.methods.firstOrNull { method ->
+                method.name == "notifyListeners" && method.parameterCount == 1
+            } ?: error("MobileSignalController.notifyListeners was not found")
+            hook(notifyListeners)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("status-bar:stacked-mobile-controller")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    val controller = chain.thisObject ?: return@intercept result
+                    updateStackedMobileSubscription(controller)
+                    refreshStackedMobilePresentations(enabled)
+                    result
+                }
+            hookCount++
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Stacked mobile controller hook unavailable", error)
+        }
+
+        runCatching {
+            val networkControllerClass = classLoader.loadClass(
+                "com.android.systemui.statusbar.connectivity.NetworkControllerImpl",
+            )
+            val subscriptionsChanged = networkControllerClass.methods.firstOrNull { method ->
+                method.name == "setCurrentSubscriptionsLocked" && method.parameterCount == 1
+            } ?: error("NetworkControllerImpl.setCurrentSubscriptionsLocked was not found")
+            hook(subscriptionsChanged)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("status-bar:stacked-mobile-subscriptions")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    synchronized(stackedMobileSignalLock) {
+                        stackedMobileNetworkController = chain.thisObject
+                    }
+                    updateStackedMobileSubscriptions(chain.getArg(0) as? List<*>)
+                    refreshStackedMobilePresentations(enabled)
+                    result
+                }
+            hookCount++
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Stacked mobile subscription hook unavailable", error)
+        }
+
+        runCatching {
+            val binderClass = loadFirstClass(classLoader, MOBILE_ICON_BINDER_CLASSES)
+            val bindMethod = binderClass.methods.firstOrNull { method ->
+                method.name == "bind" && method.parameterCount == 4 &&
+                    ViewGroup::class.java.isAssignableFrom(method.parameterTypes[0])
+            } ?: error("MiuiMobileIconBinder.bind was not found")
+            hook(bindMethod)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("status-bar:stacked-mobile-bind")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    (chain.getArg(0) as? ViewGroup)?.let { root ->
+                        registerStackedMobilePresentation(root, enabled)
+                        captureMobileNetworkTypeSource(root, chain.getArg(2))
+                        refreshStackedMobilePresentations(enabled)
+                    }
+                    result
+                }
+            hookCount++
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Stacked mobile binder hook unavailable", error)
+        }
+
+        runCatching {
+            val interactorClass = classLoader.loadClass(
+                "com.android.systemui.statusbar.pipeline.mobile.domain.interactor.MiuiMobileIconInteractorImpl",
+            )
+            val typeMethods = interactorClass.methods.filter { method ->
+                method.name == "getMobileTypeName" && method.parameterCount == 1
+            }
+            if (typeMethods.isEmpty()) error("MiuiMobileIconInteractorImpl.getMobileTypeName was not found")
+            typeMethods.forEachIndexed { index, method ->
+                hook(method)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("status-bar:mobile-network-type-$index")
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        val interactor = chain.thisObject
+                        val subId = readInheritedField(interactor, "subId") as? Number
+                        if (subId != null && result is String) {
+                            synchronized(stackedMobileSignalLock) {
+                                stackedMobileNetworkTypes[subId.toInt()] = result
+                            }
+                            refreshStackedMobilePresentations(enabled)
+                        }
+                        result
+                    }
+            }
+            hookCount += typeMethods.size
+        }.onFailure { error ->
+            log(Log.DEBUG, TAG, "Mobile network type hook unavailable", error)
+        }
+
+        runCatching {
+            val mobileViewClass = loadFirstClass(classLoader, MODERN_MOBILE_VIEW_CLASSES)
+            val constructMethod = mobileViewClass.methods.firstOrNull { method ->
+                method.name == "constructAndBind" && method.parameterCount == 5
+            } ?: error("ModernStatusBarMobileView.constructAndBind was not found")
+            hook(constructMethod)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("status-bar:stacked-mobile-construct")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    (result as? ViewGroup)?.let { root ->
+                        registerStackedMobilePresentation(root, enabled)
+                        refreshStackedMobilePresentations(enabled)
+                    }
+                    result
+                }
+            hookCount++
+
+            // StatusIconContainer lays out StatusIconDisplayable children from
+            // isIconVisible(), not from View.visibility.  Hiding the secondary root alone
+            // therefore leaves its measured width in the status-bar spacing calculation.
+            val isIconVisibleMethod = mobileViewClass.methods.firstOrNull { method ->
+                method.name == "isIconVisible" && method.parameterCount == 0 &&
+                    method.returnType == Boolean::class.javaPrimitiveType
+            } ?: error("ModernStatusBarMobileView.isIconVisible was not found")
+            hook(isIconVisibleMethod)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("status-bar:stacked-mobile-icon-visible")
+                .intercept { chain ->
+                    val view = chain.thisObject as? ViewGroup
+                    if (view != null && shouldSuppressStackedMobileIcon(view)) {
+                        false
+                    } else {
+                        chain.proceed()
+                    }
+                }
+            hookCount++
+        }.onFailure { error ->
+            log(Log.DEBUG, TAG, "Stacked mobile construction hook unavailable", error)
+        }
+
+        runCatching {
+            hook(ImageView::class.java.getMethod("setImageDrawable", Drawable::class.java))
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("status-bar:stacked-mobile-drawable")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    val view = chain.thisObject as? ImageView
+                    if (view != null && isStackedMobilePresentationSignal(view)) {
+                        refreshStackedMobilePresentations(enabled)
+                    }
+                    result
+                }
+            hook(ImageView::class.java.getMethod("setImageResource", Int::class.javaPrimitiveType))
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("status-bar:stacked-mobile-resource")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    val view = chain.thisObject as? ImageView
+                    if (view != null && isStackedMobilePresentationSignal(view)) {
+                        refreshStackedMobilePresentations(enabled)
+                    }
+                    result
+                }
+            hook(ImageView::class.java.getMethod("setImageTintList", ColorStateList::class.java))
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("status-bar:stacked-mobile-tint")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    (chain.thisObject as? ImageView)?.let { view ->
+                        refreshStackedMobilePresentationForView(view, enabled)
+                    }
+                    result
+                }
+            hookCount += 3
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Stacked mobile drawable hooks unavailable", error)
+        }
+
+        // The original mobile_type_single TextView is the most stable rendered network-type
+        // source across HyperOS builds. Mirror its text after SystemUI updates it, while keeping
+        // the injected TextView out of this hook by its private tag.
+        runCatching {
+            hook(TextView::class.java.getMethod("setText", CharSequence::class.java))
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("status-bar:mobile-network-type-text")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    val sourceView = chain.thisObject as? TextView
+                    if (sourceView != null && sourceView.tag != INDEPENDENT_MOBILE_TYPE_TAG &&
+                        stackedMobileApplying.get() != true
+                    ) {
+                        val presentation = synchronized(stackedMobileSignalLock) {
+                            stackedMobilePresentations.values.firstOrNull {
+                                it.networkTypeView === sourceView
+                            }
+                        }
+                        if (presentation != null) {
+                            refreshStackedMobilePresentationForView(presentation.signal, enabled)
+                        }
+                    }
+                    result
+                }
+            hookCount++
+        }.onFailure { error ->
+            log(Log.DEBUG, TAG, "Mobile network type text hook unavailable", error)
+        }
+
+        // The modern view assigns its subscription id after inflation. This also covers builds
+        // where the binder call is hidden behind a generated lambda.
+        runCatching {
+            val modernClass = loadFirstClass(classLoader, MODERN_MOBILE_VIEW_CLASSES)
+            val setSubId = modernClass.methods.firstOrNull { method ->
+                method.name == "setSubId" && method.parameterTypes.contentEquals(
+                    arrayOf(Int::class.javaPrimitiveType),
+                )
+            } ?: error("ModernStatusBarMobileView.setSubId was not found")
+            hook(setSubId)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .setId("status-bar:stacked-mobile-sub-id")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    (chain.thisObject as? ViewGroup)?.let { root ->
+                        registerStackedMobilePresentation(root, enabled)
+                        refreshStackedMobilePresentations(enabled)
+                    }
+                    result
+                }
+            hookCount++
+        }.onFailure { error ->
+            log(Log.DEBUG, TAG, "Stacked mobile subId hook unavailable", error)
+        }
+
+        if (hookCount > 0) {
+            log(Log.INFO, TAG, "Installed stacked mobile signal hooks ($hookCount)")
+        } else {
+            log(Log.WARN, TAG, "No stacked mobile signal hooks could be installed")
+        }
+    }
+
+    private fun updateStackedMobileSubscription(controller: Any) {
+        readInstanceField(controller, "mNetworkController")?.let { networkController ->
+            synchronized(stackedMobileSignalLock) { stackedMobileNetworkController = networkController }
+        }
+        val subscriptionInfo = readInstanceField(controller, "mSubscriptionInfo") ?: return
+        val subscriptionId = invokeInt(subscriptionInfo, "getSubscriptionId") ?: return
+        val slotIndex = invokeInt(subscriptionInfo, "getSimSlotIndex")
+            ?: SubscriptionManager.getSlotIndex(subscriptionId)
+        if (slotIndex < 0) return
+        val currentState = readInheritedField(controller, "mCurrentState") ?: return
+        val dataSim = readInheritedField(currentState, "dataSim") as? Boolean ?: false
+        val signalLevel = (readInheritedField(currentState, "level") as? Number)
+            ?.toInt()
+            ?.coerceIn(0, 4)
+            ?: 0
+        synchronized(stackedMobileSignalLock) {
+            stackedMobileSubscriptions[subscriptionId] = StackedMobileSubscription(
+                slot = slotIndex,
+                dataSim = dataSim,
+                signalLevel = signalLevel,
+            )
+            stackedMobileActiveSubscriptionIds += subscriptionId
+        }
+    }
+
+    private fun updateStackedMobileSubscriptions(subscriptions: List<*>?) {
+        if (subscriptions == null) return
+        val updated = LinkedHashMap<Int, StackedMobileSubscription>()
+        subscriptions.forEach { subscriptionInfo ->
+            if (subscriptionInfo == null) return@forEach
+            val subscriptionId = invokeInt(subscriptionInfo, "getSubscriptionId") ?: return@forEach
+            val slotIndex = invokeInt(subscriptionInfo, "getSimSlotIndex")
+                ?: SubscriptionManager.getSlotIndex(subscriptionId)
+            if (slotIndex < 0) return@forEach
+            val previous = synchronized(stackedMobileSignalLock) {
+                stackedMobileSubscriptions[subscriptionId]
+            }
+            updated[subscriptionId] = StackedMobileSubscription(
+                slot = slotIndex,
+                dataSim = previous?.dataSim == true,
+                signalLevel = previous?.signalLevel ?: 0,
+            )
+        }
+        synchronized(stackedMobileSignalLock) {
+            stackedMobileSubscriptions.clear()
+            stackedMobileSubscriptions.putAll(updated)
+            stackedMobileActiveSubscriptionIds.clear()
+            stackedMobileActiveSubscriptionIds.addAll(updated.keys)
+        }
+    }
+
+    private fun captureMobileNetworkTypeSource(root: ViewGroup, vmImpl: Any?) {
+        if (vmImpl == null) return
+        val viewModel = runCatching {
+            vmImpl.javaClass.methods.firstOrNull {
+                it.name == "getCellProvider" && it.parameterCount == 0
+            }?.invoke(vmImpl)
+        }.getOrNull() ?: return
+        val source = readInheritedField(viewModel, "showName") ?: return
+        synchronized(stackedMobileSignalLock) {
+            stackedMobilePresentations[root]?.networkTypeSource = source
+        }
+    }
+
+    private fun ensureIndependentMobileType(presentation: StackedMobilePresentation) {
+        val group = findViewByEntryName(presentation.root, "mobile_group") as? ViewGroup ?: return
+        val signalContainer = findViewByEntryName(presentation.root, "mobile_signal_container") as? ViewGroup
+        presentation.mobileGroup = group
+        presentation.mobileSignalContainer = signalContainer
+
+        val original = findViewByEntryName(presentation.root, "mobile_type_single") as? TextView
+        presentation.networkTypeView = original
+        val previous = presentation.independentType
+        val textView = original ?: previous ?: TextView(group.context).also {
+            it.tag = INDEPENDENT_MOBILE_TYPE_TAG
+            it.includeFontPadding = false
+            it.gravity = Gravity.CENTER_VERTICAL
+            it.layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            presentation.independentType = it
+        }
+        if (previous != null && previous !== textView) {
+            restoreIndependentMobileType(presentation)
+        }
+        if (original != null && previous != null && previous !== original &&
+            previous.tag == INDEPENDENT_MOBILE_TYPE_TAG
+        ) {
+            (previous.parent as? ViewGroup)?.removeView(previous)
+        }
+        if (textView === original && textView.tag == INDEPENDENT_MOBILE_TYPE_TAG) {
+            textView.tag = null
+        }
+        presentation.independentType = textView
+    }
+
+    private fun captureHorizontalMargins(view: View): IntArray? =
+        (view.layoutParams as? ViewGroup.MarginLayoutParams)?.let {
+            intArrayOf(it.leftMargin, it.topMargin, it.rightMargin, it.bottomMargin)
+        }
+
+    private fun applyHorizontalMargins(
+        view: View,
+        original: IntArray?,
+        leftOffsetPx: Int,
+        rightOffsetPx: Int,
+    ) {
+        val params = view.layoutParams as? ViewGroup.MarginLayoutParams ?: return
+        val baseline = original ?: return
+        params.leftMargin = baseline[0] + leftOffsetPx
+        params.topMargin = baseline[1]
+        params.rightMargin = baseline[2] + rightOffsetPx
+        params.bottomMargin = baseline[3]
+        view.layoutParams = params
+    }
+
+    private fun restoreIndependentMobileType(presentation: StackedMobilePresentation) {
+        val textView = presentation.independentType ?: return
+        val baselineView = presentation.savedIndependentView ?: textView
+        baselineView.scaleX = 1f
+        baselineView.scaleY = 1f
+        presentation.savedIndependentTranslationY?.let { baselineView.translationY = it }
+        presentation.savedIndependentMargins?.let { original ->
+            applyHorizontalMargins(baselineView, original, 0, 0)
+        }
+        presentation.savedIndependentView = null
+        presentation.savedIndependentTranslationY = null
+        presentation.savedIndependentMargins = null
+        val originalParent = presentation.savedIndependentParent
+        if (originalParent != null && textView.parent !== originalParent) {
+            (textView.parent as? ViewGroup)?.removeView(textView)
+            textView.layoutParams = presentation.savedIndependentLayoutParams
+            originalParent.addView(
+                textView,
+                presentation.savedIndependentIndex.coerceIn(0, originalParent.childCount),
+            )
+        }
+        presentation.savedIndependentParent = null
+        presentation.savedIndependentIndex = -1
+        presentation.savedIndependentLayoutParams = null
+    }
+
+    private fun applyIndependentMobileType(
+        presentation: StackedMobilePresentation,
+        useStacked: Boolean,
+    ) {
+        val textView = presentation.independentType ?: return
+        val group = presentation.mobileGroup ?: return
+        val signalContainer = presentation.mobileSignalContainer
+        val mode = stackedMobilePreferences?.getInt(KEY_MOBILE_NETWORK_TYPE_MODE, 0)
+            ?.let { if (it == 1) 1 else 0 } ?: 0
+        val position = stackedMobilePreferences?.getInt(KEY_MOBILE_NETWORK_TYPE_POSITION, 0)?.coerceIn(0, 1) ?: 0
+        val slotIndex = synchronized(stackedMobileSignalLock) {
+            stackedMobileSubscriptions[presentation.subscriptionId]?.slot
+        } ?: SubscriptionManager.getSlotIndex(presentation.subscriptionId)
+        // In normal mode preserve SystemUI's per-slot behavior.  Once the two roots are merged,
+        // only the retained slot-0 root may render the independent type.
+        val displayLogic = stackedMobilePreferences
+            ?.getInt(KEY_MOBILE_NETWORK_TYPE_DISPLAY_LOGIC, 0)
+            ?.coerceIn(0, 1) ?: 0
+        val shouldShow = mode == 1 &&
+            (!useStacked || slotIndex == 0) &&
+            (displayLogic == 0 || isUsingMobileData(presentation))
+
+        if (mode == 1) {
+            if (presentation.savedIndependentView !== textView) {
+                restoreIndependentMobileType(presentation)
+                presentation.savedIndependentView = textView
+                presentation.savedIndependentTranslationY = textView.translationY
+                presentation.savedIndependentMargins = captureHorizontalMargins(textView)
+            }
+            if (textView.parent !== group) {
+                presentation.savedIndependentParent = textView.parent as? ViewGroup
+                presentation.savedIndependentIndex = presentation.savedIndependentParent
+                    ?.indexOfChild(textView) ?: -1
+                presentation.savedIndependentLayoutParams = textView.layoutParams
+                (textView.parent as? ViewGroup)?.removeView(textView)
+                val containerIndex = signalContainer?.let(group::indexOfChild) ?: -1
+                val insertIndex = if (containerIndex >= 0) containerIndex else group.childCount
+                group.addView(textView, insertIndex)
+            }
+            val baseTranslationY = presentation.savedIndependentTranslationY ?: 0f
+            val density = textView.resources.displayMetrics.density
+            val scale = stackedMobilePreferences
+                ?.getFloat(KEY_MOBILE_NETWORK_TYPE_SCALE, 1f)
+                ?.coerceIn(0.1f, 3f) ?: 1f
+            val verticalOffset = stackedMobilePreferences
+                ?.getFloat(KEY_MOBILE_NETWORK_TYPE_VERTICAL_OFFSET, 0f)
+                ?.coerceIn(-8f, 8f) ?: 0f
+            val leftMargin = stackedMobilePreferences
+                ?.getFloat(KEY_MOBILE_NETWORK_TYPE_LEFT_MARGIN, 0f)
+                ?.coerceIn(-8f, 8f) ?: 0f
+            val rightMargin = stackedMobilePreferences
+                ?.getFloat(KEY_MOBILE_NETWORK_TYPE_RIGHT_MARGIN, 0f)
+                ?.coerceIn(-8f, 8f) ?: 0f
+            textView.scaleX = scale
+            textView.scaleY = scale
+            textView.translationY = baseTranslationY + verticalOffset * density
+            applyHorizontalMargins(
+                textView,
+                presentation.savedIndependentMargins,
+                (leftMargin * density).roundToInt(),
+                (rightMargin * density).roundToInt(),
+            )
+        } else {
+            restoreIndependentMobileType(presentation)
+        }
+
+        if (mode == 1 && signalContainer != null) {
+            val containerIndex = group.indexOfChild(signalContainer)
+            if (containerIndex >= 0) {
+                val targetIndex = containerIndex + if (position == 0) 0 else 1
+                if (group.indexOfChild(textView) != targetIndex) {
+                    group.removeView(textView)
+                    val currentContainerIndex = group.indexOfChild(signalContainer)
+                    if (currentContainerIndex >= 0) {
+                        group.addView(
+                            textView,
+                            (currentContainerIndex + if (position == 0) 0 else 1)
+                                .coerceIn(0, group.childCount),
+                        )
+                    } else {
+                        group.addView(textView)
+                    }
+                }
+            }
+        }
+
+        when (mode) {
+            1 -> {
+                val sourceValue = readCurrentFlowValue(presentation.networkTypeSource)
+                val realType = sourceValue?.toString().orEmpty().ifBlank {
+                    synchronized(stackedMobileSignalLock) {
+                        stackedMobileNetworkTypes[presentation.subscriptionId].orEmpty()
+                    }
+                }.ifBlank { presentation.networkTypeView?.text?.toString().orEmpty() }
+                val customText = stackedMobilePreferences
+                    ?.getString(KEY_MOBILE_NETWORK_TYPE_CUSTOM_TEXT, "")
+                    .orEmpty()
+                val displayText = customText.ifBlank { realType }
+                stackedMobileApplying.set(true)
+                try {
+                    textView.text = formatIndependentMobileType(
+                        displayText,
+                        realType,
+                        stackedMobilePreferences?.getBoolean(KEY_MOBILE_NETWORK_TYPE_SHRINK_5GA_A, false) == true,
+                    )
+                } finally {
+                    stackedMobileApplying.remove()
+                }
+                val color = presentation.signal.imageTintList?.getColorForState(
+                    presentation.signal.drawableState,
+                    Color.WHITE,
+                ) ?: Color.WHITE
+                textView.setTextColor(color)
+                setStackedMobileViewVisibility(
+                    textView,
+                    if (shouldShow && displayText.isNotEmpty()) View.VISIBLE else View.GONE,
+                )
+            }
+            else -> setStackedMobileViewVisibility(textView, View.GONE)
+        }
+    }
+
+    private fun formatIndependentMobileType(
+        displayText: String,
+        realType: String,
+        shrink5gaA: Boolean,
+    ): CharSequence {
+        if (!shrink5gaA || !realType.equals("5GA", ignoreCase = true) || !displayText.endsWith("A")) {
+            return displayText
+        }
+        return SpannableString(displayText).apply {
+            setSpan(
+                RelativeSizeSpan(0.5f),
+                length - 1,
+                length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
+    }
+
+    /** Matches HyperCeiler's mobile-data display mode. */
+    private fun isUsingMobileData(presentation: StackedMobilePresentation): Boolean {
+        val context = presentation.root.context
+        val airplaneMode = runCatching {
+            Settings.Global.getInt(
+                context.contentResolver,
+                Settings.Global.AIRPLANE_MODE_ON,
+                0,
+            ) != 0
+        }.getOrDefault(false)
+        if (airplaneMode) return false
+        if (presentation.subscriptionId != SubscriptionManager.getDefaultDataSubscriptionId()) {
+            return false
+        }
+        val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE)
+            as? ConnectivityManager ?: return false
+        val network = connectivity.activeNetwork ?: return false
+        val capabilities = connectivity.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+    }
+
+    private fun readCurrentFlowValue(flow: Any?): Any? = flow?.let {
+        runCatching {
+            it.javaClass.methods.firstOrNull { method ->
+                method.name == "getValue" && method.parameterCount == 0
+            }?.invoke(it)
+        }.getOrNull() ?: readInheritedField(it, "value")
+    }
+
+    private fun registerStackedMobilePresentation(root: ViewGroup, enabled: () -> Boolean) {
+        val signal = findViewByEntryName(root, "mobile_signal") as? ImageView ?: return
+        val subscriptionId = invokeInt(root, "getSubId")
+            ?: (readInstanceField(root, "subId") as? Number)?.toInt()
+            ?: return
+        if (subscriptionId < 0) return
+        val presentation = synchronized(stackedMobileSignalLock) {
+            stackedMobilePresentations[root]?.also {
+                it.signal = signal
+                it.subscriptionId = subscriptionId
+            } ?: StackedMobilePresentation(root, signal, subscriptionId).also {
+                stackedMobilePresentations[root] = it
+            }
+        }
+        registerMobileNetworkStateCallback(root.context, enabled)
+        ensureIndependentMobileType(presentation)
+        ensureDualMobileSignal(presentation)
+        if (!presentation.attachListenerInstalled) {
+            root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(view: View) {
+                    scheduleStackedMobilePresentationRefresh(presentation, enabled)
+                }
+
+                override fun onViewDetachedFromWindow(view: View) = Unit
+            })
+            presentation.attachListenerInstalled = true
+        }
+        requestStackedMobileParentLayout(root)
+    }
+
+    private fun registerMobileNetworkStateCallback(
+        context: Context,
+        enabled: () -> Boolean,
+    ) {
+        synchronized(stackedMobileSignalLock) {
+            if (stackedMobileNetworkCallbackRegistered) return
+            val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE)
+                as? ConnectivityManager ?: return
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    refreshStackedMobilePresentations(enabled)
+                }
+
+                override fun onLost(network: Network) {
+                    refreshStackedMobilePresentations(enabled)
+                }
+
+                override fun onCapabilitiesChanged(
+                    network: Network,
+                    networkCapabilities: NetworkCapabilities,
+                ) {
+                    refreshStackedMobilePresentations(enabled)
+                }
+            }
+            runCatching {
+                connectivity.registerDefaultNetworkCallback(callback)
+                stackedMobileNetworkCallbackRegistered = true
+            }.onFailure { error ->
+                log(Log.DEBUG, TAG, "Mobile network state callback unavailable", error)
+            }
+        }
+    }
+
+    private fun isStackedMobilePresentationSignal(view: ImageView): Boolean {
+        if (stackedMobileApplying.get() == true) return false
+        return synchronized(stackedMobileSignalLock) {
+            stackedMobilePresentations.values.any { it.signal === view }
+        }
+    }
+
+    private fun isIndependentMobileTypeView(view: View?): Boolean {
+        if (view == null) return false
+        return synchronized(stackedMobileSignalLock) {
+            stackedMobilePresentations.values.any { it.independentType === view }
+        }
+    }
+
+    private fun shouldHideSystemMobileSignal(view: View?, configuredMode: Int): Boolean {
+        val mode = configuredMode.coerceIn(0, 2)
+        if (mode == 0 || view !is ImageView) return false
+        val presentation = synchronized(stackedMobileSignalLock) {
+            stackedMobilePresentations.values.firstOrNull { presentation ->
+                presentation.signal === view || isDescendantOf(view, presentation.root)
+            }
+        } ?: return mode == 2
+        if (mode == 2) return true
+        val dataSim = synchronized(stackedMobileSignalLock) {
+            stackedMobileSubscriptions[presentation.subscriptionId]?.dataSim
+        }
+        // If SystemUI has not reported the state for this subscription yet, keep the
+        // icon visible instead of hiding the wrong SIM during initialization.
+        return dataSim == false
+    }
+
+    private fun isDescendantOf(view: View, root: ViewGroup): Boolean {
+        var current: View? = view
+        while (current != null) {
+            if (current === root) return true
+            current = current.parent as? View
+        }
+        return false
+    }
+
+    private fun isStackedSecondaryMobileRoot(view: View?): Boolean {
+        if (view == null) return false
+        return synchronized(stackedMobileSignalLock) {
+            stackedMobilePresentations.values.any {
+                it.root === view && it.rootHiddenByStacked
+            }
+        }
+    }
+
+    private fun shouldSuppressStackedMobileIcon(view: ViewGroup): Boolean {
+        if (stackedMobilePreferences?.getBoolean(KEY_STACKED_MOBILE_SIGNAL_ENABLED, false) != true) {
+            return false
+        }
+        val presentation = synchronized(stackedMobileSignalLock) {
+            stackedMobilePresentations[view]
+        } ?: return false
+        if (!isStackedMobileDualSim()) return false
+
+        // Use the same order as the merged glyph. This remains correct when the data SIM is
+        // not slot 0 and also covers builds where getSimSlotIndex() is temporarily unavailable.
+        val retainedSubscriptionId = stackedMobileRenderOrder().firstOrNull() ?: return false
+        return presentation.subscriptionId != retainedSubscriptionId
+    }
+
+    private fun refreshStackedMobilePresentations(enabled: () -> Boolean) {
+        val presentations = synchronized(stackedMobileSignalLock) {
+            stackedMobilePresentations.values.toList()
+        }
+        presentations.forEach { scheduleStackedMobilePresentationRefresh(it, enabled) }
+    }
+
+    private fun refreshStackedMobilePresentationForView(view: ImageView, enabled: () -> Boolean) {
+        val presentation = synchronized(stackedMobileSignalLock) {
+            stackedMobilePresentations.values.firstOrNull { it.signal === view }
+        } ?: return
+        scheduleStackedMobilePresentationRefresh(presentation, enabled)
+    }
+
+    /**
+     * Binder callbacks run before their status-bar root joins the window.  Posting from that
+     * phase is not reliable: a View can discard the callback before it is attached.  The attach
+     * listener registered above performs the first render; this helper only schedules work for
+     * roots that can receive it and coalesces later signal updates to one callback per root.
+     */
+    private fun scheduleStackedMobilePresentationRefresh(
+        presentation: StackedMobilePresentation,
+        enabled: () -> Boolean,
+    ) {
+        if (!presentation.root.isAttachedToWindow) return
+        val shouldPost = synchronized(stackedMobileSignalLock) {
+            if (presentation.refreshPending) false else {
+                presentation.refreshPending = true
+                true
+            }
+        }
+        if (!shouldPost) return
+        presentation.root.post {
+            try {
+                applyStackedMobilePresentation(presentation, enabled())
+            } finally {
+                synchronized(stackedMobileSignalLock) { presentation.refreshPending = false }
+            }
+        }
+    }
+
+    private fun applyStackedMobilePresentation(presentation: StackedMobilePresentation, enabled: Boolean) {
+        if (!presentation.root.isAttachedToWindow) return
+        val useStacked = enabled && isStackedMobileDualSim()
+        applyIndependentMobileType(presentation, useStacked)
+        if (!useStacked) {
+            restoreSecondaryMobileRoot(presentation)
+            restoreDualMobileSignal(presentation)
+            return
+        }
+
+        val slotIndex = synchronized(stackedMobileSignalLock) {
+            stackedMobileSubscriptions[presentation.subscriptionId]?.slot
+        } ?: SubscriptionManager.getSlotIndex(presentation.subscriptionId)
+        if (slotIndex > 0) {
+            hideSecondaryMobileRoot(presentation)
+            return
+        }
+        if (slotIndex < 0) {
+            restoreSecondaryMobileRoot(presentation)
+            restoreDualMobileSignal(presentation)
+            return
+        }
+        restoreSecondaryMobileRoot(presentation)
+
+        val orderedSubscriptions = stackedMobileRenderOrder().mapNotNull { subscriptionId ->
+            synchronized(stackedMobileSignalLock) { stackedMobileSubscriptions[subscriptionId] }
+        }
+        val upperSubscription = orderedSubscriptions.getOrNull(0)
+        val lowerSubscription = orderedSubscriptions.getOrNull(1)
+        if (upperSubscription == null || lowerSubscription == null) {
+            restoreDualMobileSignal(presentation)
+            return
+        }
+        val dualContainer = presentation.dualContainer ?: return
+        val dualSignal = presentation.dualSignal ?: return
+        setDualMobileSignalVisibility(presentation, true)
+        if (presentation.savedDualMargins == null) {
+            presentation.savedDualTranslationY = dualContainer.translationY
+            presentation.savedDualMargins = captureHorizontalMargins(dualContainer)
+        }
+        updateDualMobileSignalLayout(presentation)
+        val density = dualContainer.resources.displayMetrics.density
+        val scale = stackedMobilePreferences
+            ?.getFloat(KEY_STACKED_MOBILE_SIGNAL_SCALE, 1f)
+            ?.coerceIn(0.1f, 3f) ?: 1f
+        val verticalOffset = stackedMobilePreferences
+            ?.getFloat(KEY_STACKED_MOBILE_SIGNAL_VERTICAL_OFFSET, 0f)
+            ?.coerceIn(-8f, 8f) ?: 0f
+        val leftMargin = stackedMobilePreferences
+            ?.getFloat(KEY_STACKED_MOBILE_SIGNAL_LEFT_MARGIN, 0f)
+            ?.coerceIn(-8f, 8f) ?: 0f
+        val rightMargin = stackedMobilePreferences
+            ?.getFloat(KEY_STACKED_MOBILE_SIGNAL_RIGHT_MARGIN, 0f)
+            ?.coerceIn(-8f, 8f) ?: 0f
+        dualContainer.scaleX = 1.06f * scale
+        dualContainer.scaleY = scale
+        dualContainer.translationY =
+            (presentation.savedDualTranslationY ?: 0f) + verticalOffset * density
+        applyHorizontalMargins(
+            dualContainer,
+            presentation.savedDualMargins,
+            (leftMargin * density).roundToInt(),
+            (rightMargin * density).roundToInt(),
+        )
+        dualSignal.setImageDrawable(
+            StackedMobileDrawable(upperSubscription.signalLevel, lowerSubscription.signalLevel).apply {
+                alpha = presentation.signal.imageAlpha
+                setTintList(presentation.signal.imageTintList)
+                presentation.signal.colorFilter?.let(::setColorFilter)
+            },
+        )
+    }
+
+    private fun isStackedMobileDualSim(): Boolean = synchronized(stackedMobileSignalLock) {
+        val controllerCount = stackedMobileNetworkController?.let { networkController ->
+            val controllers = readInstanceField(networkController, "mMobileSignalControllers")
+            (controllers as? android.util.SparseArray<*>)?.size() ?: 0
+        } ?: 0
+        stackedMobileActiveSubscriptionIds.size >= 2 || controllerCount >= 2
+    }
+
+    private fun stackedMobileRenderOrder(): List<Int> = synchronized(stackedMobileSignalLock) {
+        val active = LinkedHashSet(stackedMobileActiveSubscriptionIds).apply {
+            stackedMobilePresentations.values
+                .filter { it.root.isAttachedToWindow }
+                .forEach { add(it.subscriptionId) }
+        }.toList()
+        active.sortedWith(compareBy<Int>(
+            { if (stackedMobileSubscriptions[it]?.dataSim == true) 0 else 1 },
+            { stackedMobileSubscriptions[it]?.slot ?: SubscriptionManager.getSlotIndex(it) },
+            { it },
+        ))
+    }
+
+    private fun ensureDualMobileSignal(presentation: StackedMobilePresentation) {
+        val signalContainer = presentation.mobileSignalContainer ?: return
+        val existing = signalContainer.findViewById<FrameLayout>(stackedMobileDualContainerId)
+        val dualContainer = existing ?: FrameLayout(signalContainer.context).apply {
+            id = stackedMobileDualContainerId
+            layoutParams = ViewGroup.LayoutParams(
+                resolveDualMobileSignalWidth(presentation.signal),
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            addView(
+                ImageView(context).apply {
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    adjustViewBounds = false
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                },
+            )
+        }.also { signalContainer.addView(it) }
+
+        presentation.dualContainer = dualContainer
+        presentation.dualSignal = dualContainer.getChildAt(0) as? ImageView ?: return
+        configureDualMobileSignalConstraints(dualContainer)
+        updateDualMobileSignalLayout(presentation)
+    }
+
+    private fun resolveDualMobileSignalWidth(signal: ImageView): Int {
+        val density = signal.resources.displayMetrics.density
+        val measured = signal.width
+        if (measured > 0) return measured
+        val layoutWidth = signal.layoutParams?.width ?: 0
+        if (layoutWidth > 0) return layoutWidth
+        if (signal.minimumWidth > 0) return signal.minimumWidth
+        return (18f * density).roundToInt()
+    }
+
+    private fun updateDualMobileSignalLayout(presentation: StackedMobilePresentation) {
+        val dualContainer = presentation.dualContainer ?: return
+        val dualSignal = presentation.dualSignal ?: return
+        val width = resolveDualMobileSignalWidth(presentation.signal)
+        dualContainer.layoutParams?.let { params ->
+            if (params.width != width) {
+                params.width = width
+                dualContainer.layoutParams = params
+            }
+        }
+        dualSignal.layoutParams?.let { params ->
+            if (params.width != ViewGroup.LayoutParams.MATCH_PARENT ||
+                params.height != ViewGroup.LayoutParams.MATCH_PARENT
+            ) {
+                params.width = ViewGroup.LayoutParams.MATCH_PARENT
+                params.height = ViewGroup.LayoutParams.MATCH_PARENT
+                dualSignal.layoutParams = params
+            }
+        }
+    }
+
+    private fun configureDualMobileSignalConstraints(dualContainer: FrameLayout) {
+        val params = dualContainer.layoutParams ?: return
+        setLayoutParamInt(params, "endToEnd", 0)
+        setLayoutParamInt(params, "startToStart", -1)
+        setLayoutParamInt(params, "topToTop", 0)
+        setLayoutParamInt(params, "bottomToBottom", 0)
+        dualContainer.layoutParams = params
+    }
+
+    private fun setLayoutParamInt(params: ViewGroup.LayoutParams, name: String, value: Int) {
+        var type: Class<*>? = params.javaClass
+        while (type != null) {
+            val field = runCatching { type.getDeclaredField(name) }.getOrNull()
+            if (field != null) {
+                runCatching {
+                    field.isAccessible = true
+                    field.setInt(params, value)
+                }
+                return
+            }
+            type = type.superclass
+        }
+    }
+
+    private fun setDualMobileSignalVisibility(presentation: StackedMobilePresentation, visible: Boolean) {
+        presentation.dualContainer?.visibility = if (visible) View.VISIBLE else View.GONE
+        // The original ImageView remains untouched except for this temporary visibility switch;
+        // SystemUI keeps its drawable and state flows intact for the normal mode.
+        presentation.signal.visibility = if (visible) View.GONE else View.VISIBLE
+        requestStackedMobileParentLayout(presentation.root)
+    }
+
+    private fun restoreDualMobileSignal(presentation: StackedMobilePresentation) {
+        val dualContainer = presentation.dualContainer
+        if (dualContainer != null) {
+            dualContainer.visibility = View.GONE
+            dualContainer.scaleX = 1f
+            dualContainer.scaleY = 1f
+            presentation.savedDualTranslationY?.let { dualContainer.translationY = it }
+            presentation.savedDualMargins?.let { original ->
+                applyHorizontalMargins(dualContainer, original, 0, 0)
+            }
+        }
+        presentation.signal.visibility = View.VISIBLE
+        presentation.savedDualTranslationY = null
+        presentation.savedDualMargins = null
+        requestStackedMobileParentLayout(presentation.root)
+    }
+
+    private fun hideSecondaryMobileRoot(presentation: StackedMobilePresentation) {
+        if (!presentation.rootHiddenByStacked) {
+            presentation.savedRootVisibility = presentation.root.visibility
+            presentation.rootHiddenByStacked = true
+        }
+        presentation.root.visibility = View.GONE
+        presentation.root.requestLayout()
+        (presentation.root.parent as? View)?.requestLayout()
+    }
+
+    private fun restoreSecondaryMobileRoot(presentation: StackedMobilePresentation) {
+        if (!presentation.rootHiddenByStacked) return
+        presentation.root.visibility = presentation.savedRootVisibility ?: View.VISIBLE
+        presentation.savedRootVisibility = null
+        presentation.rootHiddenByStacked = false
+        presentation.root.requestLayout()
+        (presentation.root.parent as? View)?.requestLayout()
+    }
+
+    private fun requestStackedMobileParentLayout(root: View) {
+        (root.parent as? View)?.requestLayout()
+    }
+
+    private fun loadFirstClass(classLoader: ClassLoader, classNames: Array<String>): Class<*> {
+        var lastError: Throwable? = null
+        classNames.forEach { className ->
+            try {
+                return classLoader.loadClass(className)
+            } catch (error: Throwable) {
+                lastError = error
+            }
+        }
+        throw ClassNotFoundException(classNames.joinToString(), lastError)
+    }
+
+    private fun setStackedMobileViewVisibility(view: View, visibility: Int) {
+        view.visibility = visibility
+    }
+
+    private fun invokeInt(target: Any, methodName: String): Int? = runCatching {
+        (target.javaClass.methods.firstOrNull { it.name == methodName && it.parameterCount == 0 }
+            ?.invoke(target) as? Number)?.toInt()
+    }.getOrNull()
+
+    private fun findViewByEntryName(root: ViewGroup, entryName: String): View? {
+        val id = runCatching { root.resources.getIdentifier(entryName, "id", SYSTEM_UI) }.getOrDefault(0)
+        return if (id != 0) root.findViewById(id) else null
+    }
+
+    /**
+     * Focus effects intentionally restore their own material after the normal row pipeline.
+     * The custom-background and Full-AOD variants can therefore bypass the View setter guards.
+     * Re-apply the platform normal-row effect after each focus effect has finished.
+     */
+    private fun installFocusNotificationMaterialEnforcementHooks(
+        preferences: SharedPreferences,
+        classLoader: ClassLoader,
+    ) {
+        var effectHookCount = 0
+        FOCUS_NOTIFICATION_EFFECT_CLASSES.forEach { className ->
+            runCatching {
+                val effectClass = classLoader.loadClass(className)
+                val applyMethod = effectClass.declaredMethods
+                    .filter { method ->
+                        method.name == "apply" && method.parameterCount == 2 &&
+                            method.parameterTypes[1] == Context::class.java
+                    }
+                    .let { methods ->
+                        methods.firstOrNull {
+                            it.parameterTypes[0].name.contains(EXPANDABLE_NOTIFICATION_ROW_CLASS)
+                        } ?: methods.firstOrNull()
+                    }
+                    ?: return@runCatching
+                hook(applyMethod)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("focus-notification-normal-material:${effectClass.simpleName}")
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        val row = chain.getArg(0) as? View
+                        val context = chain.getArg(1) as? Context
+                        if (preferences.getBoolean(KEY_UNIFY_NOTIFICATION_MATERIAL, false) &&
+                            row != null && context != null && isFocusNotificationRow(row)
+                        ) {
+                            applyNormalNotificationRowEffect(row, context, classLoader, effectClass.simpleName)
+                        }
+                        result
+                    }
+                effectHookCount++
+            }.onFailure { error ->
+                log(Log.DEBUG, TAG, "Focus effect hook unavailable for $className", error)
+            }
+        }
+
+        runCatching {
+            val injectorClass = classLoader.loadClass(EXPANDABLE_NOTIFICATION_ROW_INJECTOR_CLASS)
+            injectorClass.declaredMethods
+                .filter { it.name == "updateFullAodAnimState" }
+                .forEachIndexed { index, method ->
+                    hook(method)
+                        .setExceptionMode(ExceptionMode.PROTECTIVE)
+                        .setId("focus-notification-normal-material:full-aod-$index")
+                        .intercept { chain ->
+                            val result = chain.proceed()
+                            val row = readInstanceField(chain.thisObject, "view") as? View
+                            if (preferences.getBoolean(KEY_UNIFY_NOTIFICATION_MATERIAL, false) &&
+                                row != null && isFocusNotificationRow(row)
+                            ) {
+                                applyNormalNotificationRowEffect(
+                                    row,
+                                    row.context,
+                                    classLoader,
+                                    "full-aod",
+                                )
+                            }
+                            result
+                        }
+                }
+        }.onFailure { error ->
+            log(Log.DEBUG, TAG, "Focus Full-AOD material hook unavailable", error)
+        }
+
+        log(Log.INFO, TAG, "Installed focus notification normal-material enforcement ($effectHookCount effects)")
+    }
+
+    private fun applyNormalNotificationRowEffect(
+        row: View,
+        context: Context,
+        classLoader: ClassLoader,
+        source: String,
+    ) {
+        runCatching {
+            val effectClass = classLoader.loadClass(NOTIFICATION_ROW_GLASS_EFFECT_CLASS)
+            val instance = effectClass.fields.firstOrNull { it.name == "INSTANCE" }?.get(null)
+                ?: effectClass.declaredFields.firstOrNull { it.name == "INSTANCE" }
+                    ?.apply { isAccessible = true }
+                    ?.get(null)
+                ?: return@runCatching
+            val apply = effectClass.methods.firstOrNull {
+                it.name == "apply" && it.parameterCount == 2
+            } ?: return@runCatching
+            apply.invoke(instance, row, context)
+            val hit = "$source:${row.javaClass.name}"
+            if (focusMaterialEnforcementHits.add(hit)) {
+                log(Log.INFO, TAG, "Re-applied normal notification glass after focus effect ($source)")
+            }
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Could not re-apply normal notification glass after focus effect", error)
+        }
+    }
+
+    private fun isFocusNotificationRow(row: View): Boolean {
+        return runCatching {
+            val injector = row.javaClass.methods.firstOrNull {
+                it.name == "getInjector" && it.parameterCount == 0
+            }?.invoke(row)
+            val focusMethod = injector?.javaClass?.methods?.firstOrNull {
+                it.name == "isFocusNotification" && it.parameterCount == 0
+            }
+            (focusMethod?.invoke(injector) as? Boolean) ?: false
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Focus notifications with a custom background (for example the flashlight entry) can
+     * re-install notification_focus_item_bg during full-AOD updates.  That drawable is opaque
+     * in dark mode and bypasses the normal View.setBackground hook, so keep this path transparent
+     * while the notification-material unification switch is enabled.
+     */
+    private fun installFocusNotificationBackgroundHook(
+        preferences: SharedPreferences,
+        classLoader: ClassLoader,
+    ) {
+        runCatching {
+            val backgroundClass = classLoader.loadClass(NOTIFICATION_BACKGROUND_VIEW_CLASS)
+            backgroundClass.declaredMethods
+                .filter { method ->
+                    method.name == "setCustomBackground" && method.parameterCount == 1 &&
+                        (method.parameterTypes[0] == Drawable::class.java ||
+                            method.parameterTypes[0] == Int::class.javaPrimitiveType)
+                }
+                .forEachIndexed { index, method ->
+                    hook(method)
+                        .setExceptionMode(ExceptionMode.PROTECTIVE)
+                        .setId("focus-notification-transparent-background-$index")
+                        .intercept { chain ->
+                            val view = chain.thisObject as? View
+                            val unify = preferences.getBoolean(KEY_UNIFY_NOTIFICATION_MATERIAL, false)
+                            val isFocus = unify && view != null &&
+                                isNotificationRowBackground(view) &&
+                                notificationTypeFor(view) == NotificationMaterialType.FOCUS
+                            if (!isFocus) {
+                                chain.proceed()
+                            } else if (method.parameterTypes[0] == Drawable::class.java) {
+                                val transparent = view.resources.getIdentifier(
+                                    "notification_heads_up_transparent_bg",
+                                    "drawable",
+                                    SYSTEM_UI,
+                                )
+                                if (transparent != 0) {
+                                    chain.proceedWith(
+                                        chain.thisObject,
+                                        arrayOf(view.resources.getDrawable(transparent, null)),
+                                    )
+                                } else {
+                                    chain.proceed()
+                                }
+                            } else {
+                                val transparent = view.resources.getIdentifier(
+                                    "notification_heads_up_transparent_bg",
+                                    "drawable",
+                                    SYSTEM_UI,
+                                )
+                                if (transparent != 0) {
+                                    chain.proceedWith(chain.thisObject, arrayOf(transparent))
+                                } else {
+                                    chain.proceed()
+                                }
+                            }
+                        }
+                }
+            log(Log.INFO, TAG, "Installed transparent custom-background guard for focus notifications")
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Could not install focus notification custom-background guard", error)
+        }
+    }
+
     private fun notificationTuningFor(view: View, preferences: SharedPreferences): GlassTuning? {
         if (!isNotificationRowBackground(view)) return null
-        val onKeyguard = runCatching {
-            (readInstanceField(view, "mOnKeyguard") as? Boolean)
-                ?: (view.javaClass.methods.firstOrNull {
-                    it.name == "isOnKeyguard" && it.parameterCount == 0
-                }?.invoke(view) as? Boolean)
-                ?: false
-        }.getOrDefault(false)
+        val onKeyguard = notificationOnKeyguard(view)
         val type = notificationTypeFor(view)
         val contextIsLockscreen = !preferences.getBoolean(KEY_NOTIFICATION_CONTEXT_UNIFIED, true) && onKeyguard
         val typeIsSeparate = !preferences.getBoolean(KEY_NOTIFICATION_TYPE_UNIFIED, true)
+        val materialIsUnified = preferences.getBoolean(KEY_UNIFY_NOTIFICATION_MATERIAL, false)
         return when {
-            !typeIsSeparate -> if (contextIsLockscreen) {
+            !typeIsSeparate || (materialIsUnified && type != NotificationMaterialType.NORMAL) -> if (contextIsLockscreen) {
                 glassTuning(preferences, KEY_LOCKSCREEN_NORMAL)
             } else {
                 glassTuning(preferences, KEY_NOTIFICATION_CENTER_NORMAL)
@@ -1726,8 +3063,8 @@ class HyperSystemUiModule : XposedModule() {
      * not from the anonymous child view receiving the setter call.
      */
     private fun materialTuningFor(view: View, preferences: SharedPreferences): GlassTuning? = when {
-        isNotificationCenterCall() && isNotificationRowBackground(view) &&
-            !isMediaNotificationView(view) ->
+        isNotificationRowBackground(view) &&
+            (!isMediaNotificationView(view) || preferences.getBoolean(KEY_UNIFY_NOTIFICATION_MATERIAL, false)) ->
             notificationTuningFor(view, preferences)
         isControlCenterCall() -> controlCenterTuningFor(view, preferences)
         else -> null
@@ -1823,6 +3160,115 @@ class HyperSystemUiModule : XposedModule() {
                 }
             }
         }
+    }
+
+    private fun shouldUseNormalNotificationMaterial(
+        view: View?,
+        preferences: SharedPreferences,
+    ): Boolean {
+        if (view == null || !preferences.getBoolean(KEY_UNIFY_NOTIFICATION_MATERIAL, false)) return false
+        return isMediaNotificationView(view) ||
+            (isNotificationRowBackground(view) && notificationTypeFor(view) != NotificationMaterialType.NORMAL)
+    }
+
+    private fun notificationMaterialTarget(
+        view: View?,
+        preferences: SharedPreferences,
+    ): Boolean {
+        if (view == null) return false
+        if (isNotificationRowBackground(view)) return true
+        return isMediaNotificationView(view) &&
+            preferences.getBoolean(KEY_UNIFY_NOTIFICATION_MATERIAL, false)
+    }
+
+    private fun normalNotificationGlassParams(view: View): FloatArray? {
+        val resources = view.resources
+        val resourceName = if (notificationOnKeyguard(view)) {
+            "notification_glass_params_on_keyguard"
+        } else {
+            NORMAL_NOTIFICATION_GLASS_PARAMS_ARRAY
+        }
+        synchronized(normalNotificationGlassParamsCache) {
+            normalNotificationGlassParamsCache[resources]?.get(resourceName)?.let { return it.copyOf() }
+        }
+        val params = runCatching {
+            val resourceId = resources.getIdentifier(
+                resourceName,
+                "array",
+                SYSTEM_UI,
+            )
+            if (resourceId == 0) return@runCatching null
+            resources.getStringArray(resourceId)
+                .map { it.toFloatOrNull() ?: return@runCatching null }
+                .toFloatArray()
+                .takeIf { it.size >= MIN_GLASS_PARAMS_SIZE }
+        }.getOrNull() ?: return null
+        synchronized(normalNotificationGlassParamsCache) {
+            normalNotificationGlassParamsCache.getOrPut(resources) { mutableMapOf() }[resourceName] = params.copyOf()
+        }
+        return params
+    }
+
+    private fun normalNotificationBlendColors(view: View?, preferences: SharedPreferences): IntArray? {
+        if (view == null || !preferences.getBoolean(KEY_UNIFY_NOTIFICATION_MATERIAL, false)) return null
+        val isNotification = isNotificationRowBackground(view) || isMediaNotificationView(view)
+        if (!isNotification || !isNotificationMaterialCall()) return null
+        // The switch makes focus and MEDIA notifications use the normal notification recipe.
+        // Ordinary notifications already use that recipe and must keep their original blend
+        // points; replacing them here can apply the blend layer a second time and make the row
+        // appear intermittently over-bright.
+        if (notificationTypeFor(view) == NotificationMaterialType.NORMAL) return null
+        val keyguard = notificationOnKeyguard(view)
+        val suffix = if (keyguard) "keyguard" else "shade"
+        return runCatching {
+            val resources = view.resources
+            intArrayOf(
+                resources.getColorByName("notification_element_blend_${suffix}_color_1"),
+                resources.getIntegerByName("notification_element_blend_${suffix}_mode_1"),
+                resources.getColorByName("notification_element_blend_${suffix}_color_2"),
+                resources.getIntegerByName("notification_element_blend_${suffix}_mode_2"),
+            )
+        }.getOrNull()
+    }
+
+    private fun normalNotificationBlendPoints(
+        view: View?,
+        preferences: SharedPreferences,
+    ): ArrayList<Point>? = normalNotificationBlendColors(view, preferences)?.let { colors ->
+        ArrayList<Point>(colors.size / 2).also { points ->
+            colors.asList().chunked(2).forEach { pair ->
+                if (pair.size == 2) points += Point(pair[0], pair[1])
+            }
+        }
+    }
+
+    private fun Resources.getColorByName(name: String): Int =
+        getColor(getIdentifier(name, "color", SYSTEM_UI), null)
+
+    private fun Resources.getIntegerByName(name: String): Int =
+        getInteger(getIdentifier(name, "integer", SYSTEM_UI))
+
+    private fun isNotificationMaterialCall(): Boolean {
+        val stack = Thread.currentThread().stackTrace
+        return stack.any {
+            it.className.startsWith("com.android.systemui.statusbar.notification.") ||
+                it.className.startsWith("com.miui.systemui.statusbar.notification.")
+        }
+    }
+
+    private fun notificationOnKeyguard(view: View): Boolean {
+        val state = generateSequence<View>(view) { it.parent as? View }
+            .mapNotNull { candidate ->
+                runCatching {
+                    readInstanceField(candidate, "mOnKeyguard") as? Boolean
+                        ?: (candidate.javaClass.methods.firstOrNull {
+                            it.name == "isOnKeyguard" && it.parameterCount == 0
+                        }?.invoke(candidate) as? Boolean)
+                }.getOrNull()
+            }
+            .firstOrNull()
+        if (state != null) return state
+        return isMediaNotificationView(view) && isLockscreenMediaView(view)
     }
 
     private fun applySystemNotificationRowGlass(background: View, source: String): Boolean {
@@ -1996,7 +3442,8 @@ class HyperSystemUiModule : XposedModule() {
         // Media controls have their own progress/background renderer. Applying the generic
         // notification recipe to those child views can make the seek bar disappear while the
         // asynchronous glass layer is rebuilding.
-        view != null && isMediaNotificationView(view) -> null
+        view != null && isMediaNotificationView(view) &&
+            !preferences.getBoolean(KEY_UNIFY_NOTIFICATION_MATERIAL, false) -> null
         view != null && isNotificationRowBackground(view) ->
             preferences.getMaterialOverride(KEY_NOTIFICATION_ELEMENTS_MATERIAL)
         controlCenter -> preferences.getMaterialOverride(KEY_CONTROL_CENTER_ELEMENTS_MATERIAL)
@@ -2182,12 +3629,115 @@ class HyperSystemUiModule : XposedModule() {
                             preferences = preferences,
                             classLoader = classLoader,
                         )
+                        scheduleLockscreenWidgetInstallation(
+                            root = root,
+                            shortcutController = chain.thisObject,
+                            preferences = preferences,
+                            classLoader = classLoader,
+                        )
                         result
                     }
             }
             log(Log.INFO, TAG, "Installed ${shortcutMethods.size} lockscreen shortcut glass hook(s)")
         }.onFailure { error ->
             log(Log.ERROR, TAG, "Could not install lockscreen shortcut glass hook", error)
+        }
+    }
+
+    /**
+     * The lockscreen editor and charge animation both sit above the normal keyguard hierarchy.
+     * Their windows retain the shortcut host, so a KeyguardManager-only check briefly exposes
+     * injected content while the vendor scene is transitioning.
+     */
+    private fun installLockscreenWidgetSceneVisibilityHooks(classLoader: ClassLoader) {
+        runCatching {
+            val editorClass = classLoader.loadClass(KEYGUARD_EDITOR_HELPER_CLASS)
+            val stateMethods = editorClass.declaredMethods.filter {
+                it.name == "setEditorState" && it.parameterCount == 1
+            }
+            check(stateMethods.isNotEmpty()) { "KeyguardEditorHelper.setEditorState was not found" }
+            stateMethods.forEachIndexed { index, method ->
+                hook(method)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("lockscreen-widget:editor-scene-$index")
+                    .intercept { chain ->
+                        val stateName = chain.getArg(0)?.toString()
+                        if (stateName != null && stateName != "IDEL") {
+                            LockscreenWidgetSceneState.setEditorActive(true)
+                        }
+                        val result = chain.proceed()
+                        if (stateName == "IDEL") {
+                            LockscreenWidgetSceneState.setEditorActive(false)
+                        }
+                        result
+                    }
+            }
+            log(Log.INFO, TAG, "Installed lockscreen-widget editor-scene visibility hook(s)")
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Could not install lockscreen-widget editor-scene visibility hooks", error)
+        }
+        runCatching {
+            val chargeClass = classLoader.loadClass(MIUI_CHARGE_ANIMATION_VIEW_CLASS)
+            val showMethods = chargeClass.declaredMethods.filter {
+                it.name == "addChargeView" && it.parameterCount == 0
+            }
+            val hideMethods = chargeClass.declaredMethods.filter { it.name == "removeChargeView" }
+            check(showMethods.isNotEmpty() && hideMethods.isNotEmpty()) {
+                "MiuiChargeAnimationView visibility methods were not found"
+            }
+            showMethods.forEachIndexed { index, method ->
+                hook(method)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("lockscreen-widget:charging-scene-show-$index")
+                    .intercept { chain ->
+                        LockscreenWidgetSceneState.setChargingActive(true)
+                        try {
+                            chain.proceed()
+                        } catch (error: Throwable) {
+                            LockscreenWidgetSceneState.setChargingActive(false)
+                            throw error
+                        }
+                    }
+            }
+            hideMethods.forEachIndexed { index, method ->
+                hook(method)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("lockscreen-widget:charging-scene-hide-$index")
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        LockscreenWidgetSceneState.setChargingActive(false)
+                        result
+                    }
+            }
+            log(Log.INFO, TAG, "Installed lockscreen-widget charging-scene visibility hook(s)")
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Could not install lockscreen-widget charging-scene visibility hooks", error)
+        }
+        runCatching {
+            val listenerClass = classLoader.loadClass(CONTROL_CENTER_EXPAND_LISTENER_CLASS)
+            val stateMethods = listenerClass.declaredMethods.filter {
+                it.name == "onExpandStateChanged" && it.parameterCount == 1
+            }
+            check(stateMethods.isNotEmpty()) { "ControlCenter expand-state listener was not found" }
+            stateMethods.forEachIndexed { index, method ->
+                hook(method)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("lockscreen-widget:control-center-scene-$index")
+                    .intercept { chain ->
+                        val isCollapsed = chain.getArg(0)?.toString() == "COLLAPSED"
+                        if (!isCollapsed) {
+                            LockscreenWidgetSceneState.setControlCenterActive(true)
+                        }
+                        val result = chain.proceed()
+                        if (isCollapsed) {
+                            LockscreenWidgetSceneState.setControlCenterActive(false)
+                        }
+                        result
+                    }
+            }
+            log(Log.INFO, TAG, "Installed lockscreen-widget control-center visibility hook(s)")
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Could not install lockscreen-widget control-center visibility hooks", error)
         }
     }
 
@@ -2422,6 +3972,79 @@ class HyperSystemUiModule : XposedModule() {
         root.postDelayed(::install, LOCKSCREEN_SHORTCUT_RETRY_DELAY_MS)
     }
 
+    private fun installLockscreenWidget(
+        root: View,
+        shortcutController: Any?,
+        preferences: SharedPreferences,
+        classLoader: ClassLoader,
+    ) {
+        val shortcuts = findShortcutContainers(root)
+        val legacyShortcuts = if (shortcuts.size >= 2) {
+            val left = shortcuts.firstOrNull { it.idName() == "shortcut_view_left_layout" } ?: shortcuts[0]
+            val right = shortcuts.firstOrNull { it.idName() == "shortcut_view_right_layout" } ?: shortcuts[1]
+            left to right
+        } else null
+        val controllerShortcuts = resolveLockscreenShortcutViews(shortcutController)
+        val (left, right) = controllerShortcuts ?: legacyShortcuts ?: return
+        if (left === right) return
+        val shortcutParent = commonShortcutParent(left, right) ?: return
+        // MiuiShortcutController.addShortcutViews() clears the shortcut subtree with
+        // removeAllViews(). Attach to the stable full-screen root and position from the
+        // shortcut centers, so the widget survives every vendor rebuild.
+        val parent = (root.rootView as? ViewGroup) ?: shortcutParent
+        parent.clipChildren = false
+        parent.clipToPadding = false
+        val old = synchronized(lockscreenWidgetControllers) { lockscreenWidgetControllers[parent] }
+        if (!preferences.getBoolean(KEY_LOCKSCREEN_WIDGET_ENABLED, false)) {
+            old?.destroy()
+            lockscreenWidgetControllers.remove(parent)
+            return
+        }
+        if (old == null) {
+            synchronized(lockscreenWidgetControllers) {
+                lockscreenWidgetControllers[parent] = LockscreenWidgetController(
+                    host = parent,
+                    leftShortcut = left,
+                    rightShortcut = right,
+                    preferences = preferences,
+                    classLoader = classLoader,
+                    applyBatteryTrackMaterial = { view ->
+                        runCatching {
+                            applyLockscreenWidgetBatteryMaterial(view, preferences, classLoader)
+                        }.onFailure { error ->
+                            log(Log.ERROR, TAG, "Could not initialize lockscreen battery material", error)
+                        }
+                    },
+                    applyShortcutSurfaceMaterial = { view ->
+                        runCatching {
+                            applyLockscreenWidgetShortcutSurfaceMaterial(view, preferences, classLoader)
+                        }.onFailure { error ->
+                            log(Log.ERROR, TAG, "Could not initialize lockscreen widget surface material", error)
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    private fun scheduleLockscreenWidgetInstallation(
+        root: View,
+        shortcutController: Any?,
+        preferences: SharedPreferences,
+        classLoader: ClassLoader,
+    ) {
+        fun install() {
+            runCatching {
+                installLockscreenWidget(root, shortcutController, preferences, classLoader)
+            }.onFailure { error ->
+                log(Log.ERROR, TAG, "Could not apply lockscreen widget", error)
+            }
+        }
+        install()
+        root.post(::install)
+        root.postDelayed(::install, LOCKSCREEN_SHORTCUT_RETRY_DELAY_MS)
+    }
+
     private fun resolveLockscreenShortcutViews(shortcutController: Any?): Pair<View, View>? = runCatching {
         val controller = shortcutController ?: return@runCatching null
         val action = controller.javaClass.methods.firstOrNull {
@@ -2441,11 +4064,16 @@ class HyperSystemUiModule : XposedModule() {
         // Stored height uses the same dp unit as the shortcut circle radius; rendering doubles
         // it to obtain the card's actual height.
         val height = preferences.readMiniPlayerHeightRadius()
+        val artworkCornerRadius = preferences.getFloat(
+            KEY_LOCKSCREEN_MINI_PLAYER_ARTWORK_CORNER_RADIUS,
+            12f,
+        ).coerceIn(0f, 60f)
         val requestedMode = preferences.getInt(KEY_LOCKSCREEN_MINI_PLAYER_BACKGROUND_MODE, 0).coerceIn(0, 3)
         fun shortcutAppearance(mode: Int) = MiniPlayerAppearance(
             backgroundMode = mode,
             widthDp = width,
             heightDp = height,
+            artworkCornerRadiusDp = artworkCornerRadius,
             pureColor = preferences.getInt(KEY_SHORTCUT_PURE_COLOR, SHORTCUT_PURE_COLOR),
             advancedColor = preferences.getInt(
                 KEY_SHORTCUT_ADVANCED_MATERIAL_COLOR,
@@ -2477,7 +4105,12 @@ class HyperSystemUiModule : XposedModule() {
         if (requestedMode == MINI_PLAYER_BACKGROUND_DEFAULT) {
             val shortcutMode = shortcutBackgroundMode(preferences)
             return if (shortcutMode == SHORTCUT_BACKGROUND_NONE) {
-                MiniPlayerAppearance(MINI_PLAYER_BACKGROUND_DEFAULT, width, height)
+                MiniPlayerAppearance(
+                    backgroundMode = MINI_PLAYER_BACKGROUND_DEFAULT,
+                    widthDp = width,
+                    heightDp = height,
+                    artworkCornerRadiusDp = artworkCornerRadius,
+                )
             } else {
                 shortcutAppearance(shortcutMode)
             }
@@ -2486,6 +4119,7 @@ class HyperSystemUiModule : XposedModule() {
             backgroundMode = requestedMode,
             widthDp = width,
             heightDp = height,
+            artworkCornerRadiusDp = artworkCornerRadius,
             pureColor = preferences.getInt(KEY_MINI_PLAYER_PURE_COLOR, MINI_PLAYER_PURE_COLOR),
             advancedColor = preferences.getInt(
                 KEY_MINI_PLAYER_ADVANCED_MATERIAL_COLOR,
@@ -2758,6 +4392,173 @@ class HyperSystemUiModule : XposedModule() {
         applyTo(container)
     }
 
+    /** Apply the same platform material pipeline used by shortcut backgrounds to the widget track. */
+    private fun applyLockscreenWidgetBatteryMaterial(
+        view: View,
+        preferences: SharedPreferences,
+        classLoader: ClassLoader,
+    ) {
+        val mode = preferences.getInt(
+            KEY_LOCKSCREEN_WIDGET_BATTERY_MATERIAL_MODE,
+            LOCKSCREEN_WIDGET_BATTERY_MATERIAL_PURE,
+        ).coerceIn(
+            LOCKSCREEN_WIDGET_BATTERY_MATERIAL_PURE,
+            LOCKSCREEN_WIDGET_BATTERY_MATERIAL_SOFT,
+        )
+        val viewClass = View::class.java
+        runCatching { viewClass.getMethod("clearMiBackgroundBlendColor").invoke(view) }
+        runCatching {
+            viewClass.getMethod("setPassWindowBlurEnabled", Boolean::class.javaPrimitiveType)
+                .invoke(view, false)
+        }
+        when (mode) {
+            LOCKSCREEN_WIDGET_BATTERY_MATERIAL_PURE -> {
+                (view as? ImageView)?.setImageDrawable(null)
+                view.background = GradientDrawable().apply {
+                    setColor(preferences.getInt(KEY_SHORTCUT_PURE_COLOR, SHORTCUT_PURE_COLOR))
+                    cornerRadius = view.resources.displayMetrics.density * 9f
+                }
+            }
+            LOCKSCREEN_WIDGET_BATTERY_MATERIAL_ADVANCED -> {
+                val source = GradientDrawable().apply {
+                    setColor(Color.argb(1, 255, 255, 255))
+                    cornerRadius = view.resources.displayMetrics.density * 9f
+                }
+                if (view is ImageView) {
+                    view.background = null
+                    view.setImageDrawable(source)
+                } else {
+                    view.background = source
+                }
+                applyLegacyBackdropMaterial(
+                    view = view,
+                    opacity = preferences.getInt(KEY_SHORTCUT_ADVANCED_MATERIAL_OPACITY, DEFAULT_ADVANCED_MATERIAL_OPACITY)
+                        .coerceIn(0, 100),
+                    blurRadius = preferences.getInt(KEY_SHORTCUT_ADVANCED_MATERIAL_BLUR_RADIUS, DEFAULT_ADVANCED_MATERIAL_BLUR_RADIUS)
+                        .coerceIn(0, 40),
+                    color = preferences.getInt(KEY_SHORTCUT_ADVANCED_MATERIAL_COLOR, DEFAULT_ADVANCED_MATERIAL_COLOR),
+                    showHighlight = false,
+                )
+            }
+            LOCKSCREEN_WIDGET_BATTERY_MATERIAL_SOFT -> {
+                val source = GradientDrawable().apply {
+                    setColor(Color.argb(1, 255, 255, 255))
+                    cornerRadius = view.resources.displayMetrics.density * 9f
+                }
+                if (view is ImageView) {
+                    view.background = null
+                    view.setImageDrawable(source)
+                } else {
+                    view.background = source
+                }
+                applyLegacyBackdropMaterial(
+                    view = view,
+                    opacity = preferences.getInt(KEY_SHORTCUT_SOFT_GLASS_OPACITY, DEFAULT_SOFT_GLASS_OPACITY)
+                        .coerceIn(0, 100),
+                    blurRadius = preferences.getInt(KEY_SHORTCUT_SOFT_GLASS_BACKDROP_BLUR_RADIUS, DEFAULT_SOFT_GLASS_BACKDROP_BLUR_RADIUS)
+                        .coerceIn(0, 40),
+                    color = preferences.getInt(KEY_SHORTCUT_SOFT_GLASS_COLOR, DEFAULT_SOFT_GLASS_COLOR),
+                    showHighlight = false,
+                )
+                applySystemGlassMaterial(
+                    view = view,
+                    classLoader = classLoader,
+                    blurRadius = preferences.getInt(KEY_SHORTCUT_SOFT_GLASS_BLUR_RADIUS, DEFAULT_SOFT_GLASS_BLUR_RADIUS)
+                        .coerceIn(0, 40),
+                    luminance = preferences.getFloat(KEY_SHORTCUT_SOFT_GLASS_LUMINANCE, DEFAULT_SOFT_GLASS_LUMINANCE),
+                )
+            }
+        }
+    }
+
+    /**
+     * Combination two has three independent surfaces, but they deliberately consume the exact
+     * same preference keys and backdrop APIs as the flashlight/camera shortcut backgrounds.
+     */
+    private fun applyLockscreenWidgetShortcutSurfaceMaterial(
+        view: View,
+        preferences: SharedPreferences,
+        classLoader: ClassLoader,
+    ) {
+        val mode = shortcutBackgroundMode(preferences)
+        val viewClass = View::class.java
+        runCatching { viewClass.getMethod("clearMiBackgroundBlendColor").invoke(view) }
+        runCatching {
+            viewClass.getMethod("setPassWindowBlurEnabled", Boolean::class.javaPrimitiveType)
+                .invoke(view, false)
+        }
+        when (mode) {
+            SHORTCUT_BACKGROUND_NONE -> {
+                (view as? ImageView)?.apply {
+                    background = null
+                    setImageDrawable(GradientDrawable().apply { setColor(Color.TRANSPARENT) })
+                } ?: run { view.background = GradientDrawable().apply { setColor(Color.TRANSPARENT) } }
+            }
+            SHORTCUT_BACKGROUND_PURE_COLOR -> {
+                (view as? ImageView)?.setImageDrawable(null)
+                view.background = GradientDrawable().apply {
+                    setColor(preferences.getInt(KEY_SHORTCUT_PURE_COLOR, SHORTCUT_PURE_COLOR))
+                    cornerRadius = view.height / 2f
+                }
+            }
+            SHORTCUT_BACKGROUND_ADVANCED_MATERIAL,
+            SHORTCUT_BACKGROUND_SOFT_GLASS
+            -> {
+                val source = GradientDrawable().apply { setColor(Color.argb(1, 255, 255, 255)) }
+                if (view is ImageView) {
+                    view.background = null
+                    view.setImageDrawable(source)
+                } else {
+                    view.background = source
+                }
+                if (mode == SHORTCUT_BACKGROUND_ADVANCED_MATERIAL) {
+                    applyLegacyBackdropMaterial(
+                        view = view,
+                        opacity = preferences.getInt(
+                            KEY_SHORTCUT_ADVANCED_MATERIAL_OPACITY,
+                            DEFAULT_ADVANCED_MATERIAL_OPACITY,
+                        ).coerceIn(0, 100),
+                        blurRadius = preferences.getInt(
+                            KEY_SHORTCUT_ADVANCED_MATERIAL_BLUR_RADIUS,
+                            DEFAULT_ADVANCED_MATERIAL_BLUR_RADIUS,
+                        ).coerceIn(0, 40),
+                        color = preferences.getInt(
+                            KEY_SHORTCUT_ADVANCED_MATERIAL_COLOR,
+                            DEFAULT_ADVANCED_MATERIAL_COLOR,
+                        ),
+                        showHighlight = preferences.getBoolean(KEY_SHORTCUT_ADVANCED_MATERIAL_HIGHLIGHT, false),
+                    )
+                } else {
+                    applyLegacyBackdropMaterial(
+                        view = view,
+                        opacity = preferences.getInt(
+                            KEY_SHORTCUT_SOFT_GLASS_OPACITY,
+                            DEFAULT_SOFT_GLASS_OPACITY,
+                        ).coerceIn(0, 100),
+                        blurRadius = preferences.getInt(
+                            KEY_SHORTCUT_SOFT_GLASS_BACKDROP_BLUR_RADIUS,
+                            DEFAULT_SOFT_GLASS_BACKDROP_BLUR_RADIUS,
+                        ).coerceIn(0, 40),
+                        color = preferences.getInt(KEY_SHORTCUT_SOFT_GLASS_COLOR, DEFAULT_SOFT_GLASS_COLOR),
+                        showHighlight = false,
+                    )
+                    applySystemGlassMaterial(
+                        view = view,
+                        classLoader = classLoader,
+                        blurRadius = preferences.getInt(
+                            KEY_SHORTCUT_SOFT_GLASS_BLUR_RADIUS,
+                            DEFAULT_SOFT_GLASS_BLUR_RADIUS,
+                        ).coerceIn(0, 40),
+                        luminance = preferences.getFloat(
+                            KEY_SHORTCUT_SOFT_GLASS_LUMINANCE,
+                            DEFAULT_SOFT_GLASS_LUMINANCE,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
     private fun View.idName(): String? = runCatching {
         resources.getResourceEntryName(id)
     }.getOrNull()
@@ -2843,6 +4644,196 @@ class HyperSystemUiModule : XposedModule() {
         KEY_SHORTCUT_ICON_COLOR_MODE,
         SHORTCUT_ICON_COLOR_AUTO,
     ).coerceIn(SHORTCUT_ICON_COLOR_AUTO, SHORTCUT_ICON_COLOR_DARK)
+
+    /**
+     * HyperOS moves only the time layer for notification avoidance on several clock templates.
+     * In particular, the all-in-one clock keeps its date in a sibling text area, leaving it
+     * behind. Mirror the actual moving layer onto that date area without affecting the widget
+     * feature or its enabled state.
+     */
+    private fun installLockscreenClockDateFollowHook(classLoader: ClassLoader) {
+        runCatching {
+            val notificationTopChangeType = classLoader.loadClass(
+                "com.miui.systemui.notification.data.repository.NotificationTopChangeType",
+            )
+            val animationClasses = listOf(
+                "com.android.keyguard.clock.animation.ClockBaseAnimation",
+                "com.android.keyguard.clock.animation.allinone.AllInOneClockAnimation",
+            )
+            var hookCount = 0
+            animationClasses.forEach { className ->
+                val animationClass = classLoader.loadClass(className)
+                val methods = animationClass.declaredMethods.filter { method ->
+                    method.name == "notifStateChange" &&
+                        method.parameterTypes.contentEquals(
+                            arrayOf(
+                                Float::class.javaPrimitiveType,
+                                Boolean::class.javaPrimitiveType,
+                                notificationTopChangeType,
+                            ),
+                        )
+                }
+                methods.forEach { method ->
+                    hook(method)
+                        .setExceptionMode(ExceptionMode.PROTECTIVE)
+                        .setId("lockscreen-clock-date-follow:${className.substringAfterLast('.')}")
+                        .intercept { chain ->
+                            // Capture the template's native clock position before SystemUI
+                            // starts changing it. Only the subsequent delta belongs to the
+                            // notification avoidance animation.
+                            syncLockscreenClockDate(chain.thisObject, classLoader, schedule = false)
+                            val result = chain.proceed()
+                            syncLockscreenClockDate(chain.thisObject, classLoader)
+                            result
+                        }
+                    hookCount++
+                }
+            }
+            check(hookCount > 0) { "Keyguard clock notification animation was not found" }
+            log(Log.INFO, TAG, "Installed $hookCount lockscreen clock date-follow hook(s)")
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Lockscreen clock date-follow hook unavailable", error)
+        }
+    }
+
+    private fun syncLockscreenClockDate(
+        animation: Any?,
+        classLoader: ClassLoader,
+        schedule: Boolean = true,
+    ) {
+        val controller = readInheritedField(animation, "mMiuiClockController") ?: return
+        val clockView = readInheritedField(controller, "mClockView") ?: return
+        val clockViewType = runCatching {
+            classLoader.loadClass("com.miui.clock.module.ClockViewType")
+        }.getOrNull() ?: return
+        val movingView = getClockPart(clockView, clockViewType, "ANIMATION_CONTAINER")
+            ?: getClockPart(clockView, clockViewType, "ALL_VIEW")
+            ?: return
+        val textArea = readInheritedField(clockView, "mTextArea") as? View
+        val dateViews = linkedSetOf<View>().apply {
+            // mTextArea is the date/lunar-date container of the all-in-one and classic clocks.
+            textArea?.let(::add)
+            if (textArea == null) {
+                listOf("mDateView", "mDate", "dateView").forEach { fieldName ->
+                    (readInheritedField(clockView, fieldName) as? View)?.let(::add)
+                }
+                listOf("FULL_DATE", "DATE", "FULL_DATE_WEEK", "FULL_WEEK", "WEEK").forEach { typeName ->
+                    getClockPart(clockView, clockViewType, typeName)?.let(::add)
+                }
+            }
+        }.filter { dateView ->
+            // Most base clock classes return their root for unsupported parts. Never translate
+            // that root: it contains the time layer and would preserve the overlap.
+            dateView !== clockView && dateView !== movingView &&
+                !isViewDescendantOf(dateView, movingView) &&
+                !isViewDescendantOf(movingView, dateView)
+        }
+        if (dateViews.isEmpty()) return
+
+        syncLockscreenDateViews(clockView, movingView, dateViews)
+        if (schedule) scheduleLockscreenDateFollow(clockView, movingView, dateViews)
+    }
+
+    private fun scheduleLockscreenDateFollow(
+        clockView: Any,
+        movingView: View,
+        dateViews: List<View>,
+    ) {
+        val generation = synchronized(lockscreenDateFollowGenerations) {
+            val next = (lockscreenDateFollowGenerations[movingView] ?: 0) + 1
+            lockscreenDateFollowGenerations[movingView] = next
+            next
+        }
+        val startedAt = SystemClock.uptimeMillis()
+        fun followFrame() {
+            val current = synchronized(lockscreenDateFollowGenerations) {
+                lockscreenDateFollowGenerations[movingView]
+            }
+            if (current != generation || !movingView.isAttachedToWindow) return
+            syncLockscreenDateViews(clockView, movingView, dateViews)
+            if (SystemClock.uptimeMillis() - startedAt < LOCKSCREEN_DATE_FOLLOW_DURATION_MS) {
+                movingView.postOnAnimation(::followFrame)
+            }
+        }
+        movingView.postOnAnimation(::followFrame)
+    }
+
+    private fun syncLockscreenDateViews(
+        clockView: Any,
+        movingView: View,
+        dateViews: List<View>,
+    ) {
+        val glyphTop = findLockscreenClockGlyphTop(clockView)
+        val nativeMovingTranslation = synchronized(lockscreenDateNativeOffsets) {
+            lockscreenDateNativeOffsets.getOrPut(movingView) { movingView.translationY }
+        }
+        val offset = movingView.translationY - nativeMovingTranslation
+        dateViews.forEach { dateView ->
+            if (!dateView.isAttachedToWindow) return@forEach
+            val previousOffset = synchronized(lockscreenDateAppliedOffsets) {
+                lockscreenDateAppliedOffsets[dateView] ?: 0f
+            }
+            // Remove only our previous contribution so clock-template layout changes survive.
+            val templateTranslation = dateView.translationY - previousOffset
+            val appliedOffset = glyphTop?.let { top ->
+                val location = IntArray(2).also(dateView::getLocationOnScreen)
+                val templateTop = location[1] - previousOffset
+                // Keep a small visual gap between the date/lunar-date row and the top of the
+                // actual glyph path, rather than the larger invisible TimeView container.
+                top - dateView.resources.displayMetrics.density * LOCKSCREEN_DATE_TO_GLYPH_GAP_DP -
+                    dateView.height - templateTop
+            } ?: offset
+            dateView.translationY = templateTranslation + appliedOffset
+            synchronized(lockscreenDateAppliedOffsets) {
+                lockscreenDateAppliedOffsets[dateView] = appliedOffset
+            }
+        }
+    }
+
+    /** The all-in-one clock draws its digits inside full-screen views; textTop is their real top. */
+    private fun findLockscreenClockGlyphTop(clockView: Any): Float? = listOf(
+        "mHourView",
+        "mMinuteView",
+        "mTimeView",
+        "mTimeView2",
+    ).mapNotNull { fieldName ->
+        val timeView = readInheritedField(clockView, fieldName) as? View ?: return@mapNotNull null
+        if (!timeView.isAttachedToWindow || timeView.visibility != View.VISIBLE) return@mapNotNull null
+        val textTop = runCatching {
+            timeView.javaClass.getMethod("getTextTop").invoke(timeView) as? Number
+        }.getOrNull()?.toFloat() ?: return@mapNotNull null
+        val location = IntArray(2).also(timeView::getLocationOnScreen)
+        location[1] + textTop
+    }.minOrNull()
+
+    private fun getClockPart(clockView: Any, clockViewType: Class<*>, name: String): View? = runCatching {
+        val type = clockViewType.getField(name).get(null)
+        val getter = clockView.javaClass.methods.firstOrNull { method ->
+            method.name == "getIClockView" && method.parameterTypes.contentEquals(arrayOf(clockViewType))
+        } ?: return null
+        getter.invoke(clockView, type) as? View
+    }.getOrNull()
+
+    private fun readInheritedField(target: Any?, name: String): Any? {
+        var type = target?.javaClass
+        while (type != null) {
+            val value = runCatching {
+                type.getDeclaredField(name).apply { isAccessible = true }.get(target)
+            }.getOrNull()
+            if (value != null) return value
+            type = type.superclass
+        }
+        return null
+    }
+
+    private fun isViewDescendantOf(view: View, possibleAncestor: View): Boolean {
+        var parent = view.parent
+        while (parent is View) {
+            if (parent === possibleAncestor) return true
+            parent = parent.parent
+        }
+        return false
+    }
 
     private fun installLockscreenNotificationHook(classLoader: ClassLoader, preferences: SharedPreferences) {
         val shelfSpaceHookInstalled = runCatching {
@@ -4111,9 +6102,25 @@ class HyperSystemUiModule : XposedModule() {
                                 isNotificationCenterCall(),
                             )
                             val original = chain.getArg(0) as? FloatArray
-                            if (original != null && original.size >= MIN_GLASS_PARAMS_SIZE && tuning?.enabled == true) {
+                            val normalNotificationMaterial = if (
+                                original != null &&
+                                original.size >= MIN_GLASS_PARAMS_SIZE &&
+                                original.any { it != 0f } &&
+                                shouldUseNormalNotificationMaterial(view, preferences)
+                            ) {
+                                view?.let(::normalNotificationGlassParams)
+                            } else {
+                                null
+                            }
+                            if (original != null && original.size >= MIN_GLASS_PARAMS_SIZE &&
+                                (normalNotificationMaterial != null || tuning?.enabled == true)
+                            ) {
                                 logControlCenterMaterialHit(view, "glass-material-override")
-                                chain.proceedWith(chain.thisObject, arrayOf(applyMaterialOverride(original, tuning)))
+                                val material = normalNotificationMaterial ?: original
+                                chain.proceedWith(
+                                    chain.thisObject,
+                                    arrayOf(if (tuning?.enabled == true) applyMaterialOverride(material, tuning) else material),
+                                )
                             } else {
                                 chain.proceed()
                             }
@@ -4240,6 +6247,53 @@ class HyperSystemUiModule : XposedModule() {
             log(Log.INFO, TAG, "Installed AOD third-party wallpaper depth hooks")
         }.onFailure { error ->
             log(Log.WARN, TAG, "Could not install AOD third-party wallpaper depth hooks", error)
+        }
+    }
+
+    private fun installAodLockscreenTemplateLimitHook(
+        classLoader: ClassLoader,
+        preferences: SharedPreferences,
+    ) {
+        val mode = preferences.getInt(
+            KEY_LOCKSCREEN_TEMPLATE_LIMIT_MODE,
+            LOCKSCREEN_TEMPLATE_LIMIT_SYSTEM_DEFAULT,
+        ).coerceIn(LOCKSCREEN_TEMPLATE_LIMIT_SYSTEM_DEFAULT, LOCKSCREEN_TEMPLATE_LIMIT_CUSTOM)
+        val limit = when (mode) {
+            LOCKSCREEN_TEMPLATE_LIMIT_50 -> 50
+            LOCKSCREEN_TEMPLATE_LIMIT_60 -> 60
+            LOCKSCREEN_TEMPLATE_LIMIT_80 -> 80
+            LOCKSCREEN_TEMPLATE_LIMIT_100 -> 100
+            LOCKSCREEN_TEMPLATE_LIMIT_CUSTOM -> preferences.getInt(
+                KEY_LOCKSCREEN_TEMPLATE_LIMIT_CUSTOM,
+                50,
+            ).coerceIn(20, 200)
+            else -> return
+        }
+        runCatching {
+            val modelClass = classLoader.loadClass(
+                "com.miui.keyguard.editor.homepage.model.CrossListDataModel",
+            )
+            val limitField = modelClass.getDeclaredField("_maxTemplateCount").apply {
+                isAccessible = true
+            }
+            modelClass.declaredConstructors.forEachIndexed { index, constructor ->
+                constructor.isAccessible = true
+                hook(constructor)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("aod-lockscreen-template-limit-$index")
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        runCatching {
+                            limitField.setInt(chain.thisObject, limit)
+                        }.onFailure { error ->
+                            log(Log.WARN, TAG, "Could not set AOD lockscreen template limit", error)
+                        }
+                        result
+                    }
+            }
+            log(Log.INFO, TAG, "Installed AOD lockscreen template limit hook: $limit")
+        }.onFailure { error ->
+            log(Log.WARN, TAG, "Could not install AOD lockscreen template limit hook", error)
         }
     }
 
@@ -5039,15 +7093,9 @@ class HyperSystemUiModule : XposedModule() {
         private const val SYSTEM_UI_PLUGIN = "miui.systemui.plugin"
         private const val AOD = "com.miui.aod"
         private const val SUPER_XIAOAI_IME = "com.xiaomi.type"
+        private const val SUPER_XIAOAI_PHRASE = "com.miui.phrase"
         private const val SUBSCREEN_CENTER = "com.xiaomi.subscreencenter"
-        private val SYSTEM_UI_TARGETS = setOf(SYSTEM_UI, SYSTEM_UI_PLUGIN, AOD, SUPER_XIAOAI_IME, SUBSCREEN_CENTER)
-        private const val SUPER_XIAOAI_SERVICE_CLASS = "com.mi.ime.MiInputMethodService"
-        private const val SUPER_XIAOAI_ACTIONS_CLASS = "e8.o"
-        private const val SUPER_XIAOAI_ASK_ACTION_CLASS = "la.l"
-        private const val SUPER_XIAOAI_ASK_ACTION_METHOD = "W"
-        private const val SUPER_XIAOAI_CURRENT_EDITOR_INFO_METHOD =
-            "getCurrentEditorInfo\$app_iflytekFullRelease"
-        private const val QUICK_SEARCH_BOX = "com.android.quicksearchbox"
+        private val SYSTEM_UI_TARGETS = setOf(SYSTEM_UI, SYSTEM_UI_PLUGIN, AOD, SUPER_XIAOAI_IME, SUPER_XIAOAI_PHRASE, SUBSCREEN_CENTER)
         private const val DEPTH_EVALUATOR_CLASS =
             "com.miui.clock.utils.avoid.DepthAvoidEvaluator"
         private const val DEPTH_THRESHOLD_CLASS =
@@ -5094,6 +7142,12 @@ class HyperSystemUiModule : XposedModule() {
             "com.miui.systemui.notification.ext.NumStateViewAnimateExt"
         private const val MIUI_SHORTCUT_CONTROLLER_CLASS =
             "com.android.keyguard.shortcut.MiuiShortcutController"
+        private const val KEYGUARD_EDITOR_HELPER_CLASS =
+            "com.android.keyguard.editor.KeyguardEditorHelper"
+        private const val MIUI_CHARGE_ANIMATION_VIEW_CLASS =
+            "com.miui.charge.container.MiuiChargeAnimationView"
+        private const val CONTROL_CENTER_EXPAND_LISTENER_CLASS =
+            "com.miui.systemui.controlcenter.container.ControlCenterContainerController\$onExpandChangeListener\$1"
         private const val KEYGUARD_PIN_VIEW_CLASS = "com.android.keyguard.KeyguardPINView"
         private val LOCKSCREEN_PIN_KEY_IDS = setOf(
             "key0", "key1", "key2", "key3", "key4",
@@ -5104,6 +7158,8 @@ class HyperSystemUiModule : XposedModule() {
         private const val LOCKSCREEN_PIN_CIRCLE_RIPPLE_COLOR = 0x40FFFFFF
         private const val EXPANDABLE_NOTIFICATION_ROW_CLASS =
             "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow"
+        private const val EXPANDABLE_NOTIFICATION_ROW_INJECTOR_CLASS =
+            "com.android.systemui.statusbar.notification.row.ExpandableNotificationRowInjector"
         private const val MIUI_MEDIA_HEADER_VIEW_CLASS =
             "com.android.systemui.statusbar.notification.mediacontrol.MiuiMediaHeaderView"
         private const val MI_GLASS_COMPAT_CLASS = "com.miui.systemui.util.MiGlassCompat"
@@ -5125,6 +7181,17 @@ class HyperSystemUiModule : XposedModule() {
             "com.android.systemui.statusbar.notification.row.NotificationBackgroundView"
         private const val NOTIFICATION_ROW_GLASS_EFFECT_CLASS =
             "com.android.systemui.statusbar.notification.style.vieweffect.NotificationRowGlassEffect"
+        private val FOCUS_NOTIFICATION_EFFECT_CLASSES = listOf(
+            "com.android.systemui.statusbar.notification.style.vieweffect.FocusNotificationNormalEffect",
+            "com.android.systemui.statusbar.notification.style.vieweffect.FocusNotificationNormalCustomBgEffect",
+            "com.android.systemui.statusbar.notification.style.vieweffect.FocusNotificationBlurEffect",
+            "com.android.systemui.statusbar.notification.style.vieweffect.FocusNotificationBlurOnKeyguardEffect",
+            "com.android.systemui.statusbar.notification.style.vieweffect.FocusNotificationGlassEffect",
+            "com.android.systemui.statusbar.notification.style.vieweffect.FocusNotificationGlassCustomBgEffect",
+            "com.android.systemui.statusbar.notification.style.vieweffect.FocusNotificationGlassOnKeyguardEffect",
+            "com.android.systemui.statusbar.notification.style.vieweffect.FocusNotificationGlassOnKeyguardLightWallPaperEffect",
+            "com.android.systemui.statusbar.notification.style.vieweffect.FocusNotificationGlassFullAodEffect",
+        )
         private const val MEDIA_PANEL_CLASS =
             "miui.systemui.controlcenter.panel.main.media.MediaPlayerPanel"
         private const val AOSP_VOLUME_DIALOG_CLASS =
@@ -5164,6 +7231,8 @@ class HyperSystemUiModule : XposedModule() {
             "miui.systemui.controlcenter.windowview.MiuiDefaultThemeControllerImpl"
         private const val CLOCK_UTILITY_CLASS = "com.miui.clock.allInOne.AllInOneUtil"
         private const val CLOCK_UTILITY_METHOD = "applyOtaClockParams"
+        private const val CLOCK_BEAN_CLASS = "com.miui.clock.module.ClockBean"
+        private const val CLOCK_BEAN_IS_COLON_SHOW_METHOD = "isColonShow"
         private const val CLOCK_EFFECT_OVERLAY = 2
         private const val CLOCK_EFFECT_GLASS = 5
         private const val DYNAMIC_ISLAND_BACKGROUND_CLASS = "miui.systemui.dynamicisland.DynamicIslandBackgroundView"
@@ -5206,8 +7275,8 @@ class HyperSystemUiModule : XposedModule() {
         private const val GLASS_ALPHA_INDEX = 14
         private const val MAX_GLASS_BLUR_RADIUS = 500
         private const val DEFAULT_SHORTCUT_GLASS_RADIUS = 48f
-        private const val MIN_SHORTCUT_GLASS_RADIUS = 28f
-        private const val MAX_SHORTCUT_GLASS_RADIUS = 80f
+        private const val MIN_SHORTCUT_GLASS_RADIUS = 10f
+        private const val MAX_SHORTCUT_GLASS_RADIUS = 60f
         private const val SHORTCUT_GLASS_MATERIAL_TYPE = 1
         private const val SHORTCUT_GLASS_BLUR_MODE = 1
         private const val SHORTCUT_GLASS_BLEND_MODE = 101
@@ -5263,14 +7332,14 @@ class HyperSystemUiModule : XposedModule() {
         private const val KEY_EXPANDED_ISLAND_GLASS_LARGE_BLUR_RADIUS = "expanded_island_glass_large_blur_radius"
         private const val KEY_EXPANDED_ISLAND_SELF_BLUR_RADIUS = "expanded_island_self_blur_radius"
         private const val KEY_EXPANDED_ISLAND_SHOW_HIGHLIGHT = "expanded_island_show_highlight"
-        private const val KEY_SUPER_XIAOAI_GLOBAL_SEARCH_APPEARANCE =
-            "super_xiaoai_global_search_appearance"
         private const val KEY_NOTIFICATION_CONTEXT_UNIFIED = "notification_context_unified"
+        private const val KEY_UNIFY_NOTIFICATION_MATERIAL = "unify_notification_material"
         private const val KEY_NOTIFICATION_ELEMENTS_MATERIAL = "shade_notification_elements_material_v2"
         private const val KEY_CONTROL_CENTER_ELEMENTS_MATERIAL = "shade_control_center_elements_material_v2"
         private const val KEY_NOTIFICATION_CENTER_BACKGROUND_MATERIAL = "shade_notification_center_background_material_v2"
         private const val KEY_CONTROL_CENTER_BACKGROUND_MATERIAL = "shade_control_center_background_material_v2"
         private const val KEY_NOTIFICATION_TYPE_UNIFIED = "notification_type_unified"
+        private const val NORMAL_NOTIFICATION_GLASS_PARAMS_ARRAY = "notification_glass_params_normal"
         private const val KEY_NOTIFICATION_CENTER_BACKGROUND = "notification_center_background_glass"
         private const val KEY_CONTROL_CENTER_BACKGROUND = "control_center_background_glass"
         private const val KEY_NOTIFICATION_CENTER_NORMAL = "notification_center_normal_glass"
@@ -5344,6 +7413,8 @@ class HyperSystemUiModule : XposedModule() {
             "lockscreen_mini_player_background_mode"
         private const val KEY_LOCKSCREEN_MINI_PLAYER_WIDTH = "lockscreen_mini_player_width"
         private const val KEY_LOCKSCREEN_MINI_PLAYER_HEIGHT = "lockscreen_mini_player_height"
+        private const val KEY_LOCKSCREEN_MINI_PLAYER_ARTWORK_CORNER_RADIUS =
+            "lockscreen_mini_player_artwork_corner_radius"
         private const val KEY_MINI_PLAYER_PURE_COLOR = "mini_player_pure_color"
         private const val KEY_MINI_PLAYER_ADVANCED_MATERIAL_COLOR = "mini_player_advanced_material_color"
         private const val KEY_MINI_PLAYER_ADVANCED_MATERIAL_OPACITY =
@@ -5365,6 +7436,12 @@ class HyperSystemUiModule : XposedModule() {
         private const val KEY_HIDE_STATUS_BAR_WIFI_STANDARD = "hide_status_bar_wifi_standard"
         private const val KEY_HIDE_STATUS_BAR_CLOCK_TEXT = "hide_status_bar_clock_text"
         private const val KEY_HIDE_STATUS_BAR_NETWORK_ACTIVITY = "hide_status_bar_network_activity"
+        private const val KEY_MOBILE_NETWORK_TYPE_MODE = "mobile_network_type_mode"
+        private const val KEY_MOBILE_NETWORK_TYPE_POSITION = "mobile_network_type_position"
+        private const val KEY_MOBILE_NETWORK_TYPE_DISPLAY_LOGIC = "mobile_network_type_display_logic"
+        private const val KEY_MOBILE_NETWORK_TYPE_CUSTOM_TEXT = "mobile_network_type_custom_text"
+        private const val KEY_MOBILE_NETWORK_TYPE_SHRINK_5GA_A = "mobile_network_type_shrink_5ga_a"
+        private const val INDEPENDENT_MOBILE_TYPE_TAG = "hyper_system_ui_hook.independent_mobile_type"
         private const val BATTERY_METER_VIEW_CLASS =
             "com.android.systemui.statusbar.views.MiuiBatteryMeterView"
         private const val BATTERY_ICON_CLASS =
@@ -5379,6 +7456,14 @@ class HyperSystemUiModule : XposedModule() {
             "com.android.systemui.statusbar.pipeline.wifi.ui.binder.MiuiWifiViewBinder"
         private const val MOBILE_ICON_BINDER_CLASS =
             "com.android.systemui.statusbar.pipeline.mobile.ui.binder.MiuiMobileIconBinder"
+        private val MOBILE_ICON_BINDER_CLASSES = arrayOf(
+            MOBILE_ICON_BINDER_CLASS,
+            "com.android.systemui.statusbar.pipeline.mobile.p130ui.binder.MiuiMobileIconBinder",
+        )
+        private val MODERN_MOBILE_VIEW_CLASSES = arrayOf(
+            "com.android.systemui.statusbar.pipeline.mobile.ui.view.ModernStatusBarMobileView",
+            "com.android.systemui.statusbar.pipeline.mobile.p130ui.view.ModernStatusBarMobileView",
+        )
         private const val KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_MODE = "lockscreen_shortcut_background_mode"
         private const val KEY_LOCKSCREEN_SHORTCUT_GLASS_RADIUS = "lockscreen_shortcut_glass_radius"
         private const val KEY_LOCKSCREEN_SHORTCUT_BACKGROUND_RADIUS_ENABLED =
@@ -5407,16 +7492,22 @@ class HyperSystemUiModule : XposedModule() {
         private var aospVolumePanelHooksInstalled = false
         private var depthEffectHookInstalled = false
         private var lockscreenNotificationHookInstalled = false
+        private var lockscreenClockDateFollowHookInstalled = false
+        private var systemUiLockscreenClockColonHookInstalled = false
         private var fingerprintIconHookInstalled = false
         private var systemUiDepthHookInstalled = false
         private var lockscreenChargingHookInstalled = false
         private var lockscreenShortcutGlassHookInstalled = false
+        private var lockscreenWidgetSceneVisibilityHookInstalled = false
         private var lockscreenPinCircleBackgroundHookInstalled = false
         private var shadeMaterialHooksInstalled = false
         private var softGlassThemeSystemUiHookInstalled = false
         private var systemUiClockMaterialLimitHookInstalled = false
         private var aodClockMaterialLimitHookInstalled = false
+        private var aodLockscreenClockColonHookInstalled = false
+        private var aodLockscreenTemplateLimitHookInstalled = false
         private var statusBarVisibilityHookInstalled = false
+        private var stackedMobileSignalHookInstalled = false
         private var softGlassThemePluginHookInstalled = false
         private var softGlassThemePluginFallbackHookInstalled = false
         private var dynamicPluginThemeHookInstalled = false
@@ -5428,7 +7519,6 @@ class HyperSystemUiModule : XposedModule() {
         private var focusIslandWhitelistSystemUiHooksInstalled = false
         private var focusIslandWhitelistPluginHooksInstalled = false
         private val focusIslandWhitelistPluginInstalling = ThreadLocal.withInitial<Boolean> { false }
-        private var superXiaoAiAppearanceHooksInstalled = false
         @Volatile private var lockscreenMediaKeyguardShowing = false
         private val lockscreenRows = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
         private val lockscreenHiddenRows = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
@@ -5439,11 +7529,28 @@ class HyperSystemUiModule : XposedModule() {
         private val lockscreenMiniPlayerControllers = Collections.synchronizedMap(
             WeakHashMap<View, LockscreenMiniPlayerController>(),
         )
+        private val lockscreenWidgetControllers = Collections.synchronizedMap(
+            WeakHashMap<View, LockscreenWidgetController>(),
+        )
+        private val lockscreenDateAppliedOffsets = Collections.synchronizedMap(
+            WeakHashMap<View, Float>(),
+        )
+        private val lockscreenDateNativeOffsets = Collections.synchronizedMap(
+            WeakHashMap<View, Float>(),
+        )
+        private val lockscreenDateFollowGenerations = Collections.synchronizedMap(
+            WeakHashMap<View, Int>(),
+        )
+        private const val LOCKSCREEN_DATE_FOLLOW_DURATION_MS = 900L
+        private const val LOCKSCREEN_DATE_TO_GLYPH_GAP_DP = 12f
         private val fodEnrollmentFlowOverrides = WeakHashMap<Any, Any>()
         private val notificationGlassAppliedViews =
             Collections.newSetFromMap(WeakHashMap<View, Boolean>())
         private val notificationGlassApplying = ThreadLocal<Boolean>()
+        private val normalNotificationGlassParamsCache =
+            WeakHashMap<Resources, MutableMap<String, FloatArray>>()
         private val controlCenterMaterialHits = Collections.synchronizedSet(mutableSetOf<String>())
+        private val focusMaterialEnforcementHits = Collections.synchronizedSet(mutableSetOf<String>())
         private val expandedIslandMaterialSettings =
             Collections.synchronizedMap(WeakHashMap<View, Int>())
         // ClassLoader discovery callbacks can arrive concurrently while SystemUI plugins are
@@ -5463,5 +7570,15 @@ class HyperSystemUiModule : XposedModule() {
         private val batteryResourceRefreshSeen =
             Collections.synchronizedMap(WeakHashMap<Any, Boolean>())
         private val restoringBatteryDrawable = ThreadLocal<Boolean>()
+        private val stackedMobileSignalLock = Any()
+        private var stackedMobilePreferences: SharedPreferences? = null
+        private var stackedMobileNetworkCallbackRegistered = false
+        private var stackedMobileNetworkController: Any? = null
+        private val stackedMobileSubscriptions = LinkedHashMap<Int, StackedMobileSubscription>()
+        private val stackedMobileNetworkTypes = LinkedHashMap<Int, String>()
+        private val stackedMobileActiveSubscriptionIds = LinkedHashSet<Int>()
+        private val stackedMobilePresentations = WeakHashMap<ViewGroup, StackedMobilePresentation>()
+        private val stackedMobileApplying = ThreadLocal<Boolean>()
+        private val stackedMobileDualContainerId = View.generateViewId()
     }
 }

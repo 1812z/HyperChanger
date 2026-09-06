@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.os4.systemuihook
 
 import android.content.Context
@@ -10,6 +12,7 @@ private const val KEY_ENABLED = "enabled"
 private const val KEY_SNAPDRAGON_ICON = "snapdragon_icon"
 private const val KEY_MODEL = "model"
 private const val KEY_PROCESSOR = "processor"
+private const val KEY_DEVICE_DETAIL_PROCESSOR = "device_detail_processor"
 private const val KEY_RAM = "ram"
 private const val KEY_BATTERY = "battery"
 private const val KEY_SCREEN_SIZE = "screen_size"
@@ -30,6 +33,7 @@ data class DeviceProfileSettings(
     val snapdragonIcon: Boolean = false,
     val model: String = "",
     val processor: String = "",
+    val detailProcessor: String = "",
     val ram: String = "",
     val battery: String = "",
     val screenSize: String = "",
@@ -73,6 +77,7 @@ internal fun SharedPreferences.toDeviceProfileSettings() = DeviceProfileSettings
     snapdragonIcon = getBoolean(KEY_SNAPDRAGON_ICON, false),
     model = getString(KEY_MODEL, "").orEmpty(),
     processor = getString(KEY_PROCESSOR, "").orEmpty(),
+    detailProcessor = getString(KEY_DEVICE_DETAIL_PROCESSOR, getString(KEY_PROCESSOR, "").orEmpty()).orEmpty(),
     ram = getString(KEY_RAM, "").orEmpty(),
     battery = getString(KEY_BATTERY, "").orEmpty(),
     screenSize = getString(KEY_SCREEN_SIZE, "").orEmpty(),
@@ -95,6 +100,7 @@ private fun SharedPreferences.writeDeviceProfileSettings(value: DeviceProfileSet
         .putBoolean(KEY_SNAPDRAGON_ICON, value.snapdragonIcon)
         .putString(KEY_MODEL, value.model)
         .putString(KEY_PROCESSOR, value.processor)
+        .putString(KEY_DEVICE_DETAIL_PROCESSOR, value.detailProcessor)
         .putString(KEY_RAM, value.ram)
         .putString(KEY_BATTERY, value.battery)
         .putString(KEY_SCREEN_SIZE, value.screenSize)

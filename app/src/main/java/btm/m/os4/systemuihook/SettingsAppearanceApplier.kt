@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.os4.systemuihook
 
 import android.app.Activity
@@ -26,12 +28,15 @@ object SettingsAppearanceApplier {
     private val deviceLayers = Collections.synchronizedMap(WeakHashMap<Any, DeviceLayerSession>())
     private val originalTextColors = Collections.synchronizedMap(WeakHashMap<TextView, Int>())
     private val textModes = Collections.synchronizedMap(WeakHashMap<TextView, Int>())
+    private val fallbackTextModes = Collections.synchronizedMap(WeakHashMap<TextView, Int>())
     private val logoSessions = Collections.synchronizedMap(WeakHashMap<Any, LogoSession>())
     private val cardSessions = Collections.synchronizedMap(WeakHashMap<Activity, CardAlphaSession>())
     private val tutorialCards = Collections.synchronizedMap(WeakHashMap<Any, TutorialCardSession>())
     private val deviceInfoCards = Collections.synchronizedMap(WeakHashMap<Any, DeviceInfoCardsSession>())
     private val harmonyCards = Collections.synchronizedMap(WeakHashMap<Any, HarmonyCardSession>())
     private val harmonyInfoCards = Collections.synchronizedMap(WeakHashMap<Any, HarmonyInfoCardsSession>())
+    private val cardLikeViews = Collections.synchronizedMap(WeakHashMap<View, Boolean>())
+    private val cardColorResources = Collections.synchronizedMap(WeakHashMap<Resources, MutableMap<Int, Boolean>>())
     private val internalTextColor = ThreadLocal<Boolean>()
     private val internalLogo = ThreadLocal<Boolean>()
 
@@ -51,8 +56,13 @@ object SettingsAppearanceApplier {
             if (!source.exists) {
                 old?.remove()
                 deviceLayers.remove(fragment)
-                fragmentActivity(fragment)?.let { applyFontMode(it, source.fontMode) }
-                applyTutorialCard(fragment)
+                // The custom My Device card is independent of the background
+                // switch. Keep applying it when a custom device interface is
+                // selected, even if the stock device background is disabled.
+                if (old != null || source.deviceInterfaceStyle != DEVICE_INTERFACE_STYLE_SYSTEM || source.tutorialCardEnabled) {
+                    fragmentActivity(fragment)?.let { applyFontMode(it, source.fontMode) }
+                    applyTutorialCard(fragment)
+                }
                 return
             }
             if (old != null && old.view.sourceKey() == source.cacheKey() && old.view.parent === old.parent) {
@@ -402,7 +412,6 @@ object SettingsAppearanceApplier {
             Log.e(TAG, "logo resource replacement load failed name=$name mime=${source.mime} size=${source.size}")
             return null
         }
-        Log.i(TAG, "logo resource hit name=$name mode=${source.logoMode} mime=${source.mime}")
         return LogoDrawableLoader.forBackground(drawable, source.scale / 100f)
     }
 
@@ -427,18 +436,19 @@ object SettingsAppearanceApplier {
         resolvedColor: Int,
     ): Int? {
         if (context.packageName != "com.android.settings" || !isLightMode(resources)) return null
-        val packageName = runCatching { resources.getResourcePackageName(resourceId) }.getOrNull().orEmpty()
-        val name = runCatching { resources.getResourceEntryName(resourceId).lowercase() }.getOrNull() ?: return null
         val opacity = SettingsAppearanceSources.query(context, APPEARANCE_SLOT_HOME)
             .lightCardOpacity.coerceIn(0, 100)
         if (opacity >= 100) return null
-        if (name !in LIGHT_CARD_COLOR_RESOURCES) return null
+        val matches = cardColorResources[resources]?.get(resourceId) ?: run {
+            val packageName = runCatching { resources.getResourcePackageName(resourceId) }.getOrNull()
+            val name = runCatching { resources.getResourceEntryName(resourceId).lowercase() }.getOrNull()
+            val result = packageName == null || packageName == "com.android.settings" && name in LIGHT_CARD_COLOR_RESOURCES
+            cardColorResources.getOrPut(resources) { HashMap() }[resourceId] = result
+            result
+        }
+        if (!matches) return null
         val alpha = opacity * 255 / 100
         val replacement = (alpha shl 24) or 0x00FFFFFF
-        Log.i(
-            TAG,
-            "card color resource hit package=$packageName name=$name original=0x${resolvedColor.toUInt().toString(16)} replacement=0x${replacement.toUInt().toString(16)}",
-        )
         return replacement
     }
 
@@ -579,6 +589,7 @@ object SettingsAppearanceApplier {
         if (view is TextView) {
             if (mode == 0) {
                 textModes.remove(view)
+                fallbackTextModes.remove(view)
                 originalTextColors.remove(view)?.let { color ->
                     internalTextColor.set(true)
                     try { view.setTextColor(color) } finally { internalTextColor.remove() }
@@ -586,6 +597,7 @@ object SettingsAppearanceApplier {
             } else {
                 if (!originalTextColors.containsKey(view)) originalTextColors[view] = view.currentTextColor
                 textModes[view] = mode
+                fallbackTextModes[view] = mode
                 internalTextColor.set(true)
                 try { view.setTextColor(forcedTextColor(mode)) } finally { internalTextColor.remove() }
             }
@@ -598,7 +610,9 @@ object SettingsAppearanceApplier {
     /** Called by the TextView hooks so MIUIX rebinding cannot undo a selected font mode. */
     fun overrideTextColor(view: TextView, argument: Any?, colorStateList: Boolean): Any? {
         if (internalTextColor.get() == true) return argument
-        val mode = textModes[view] ?: fallbackFontMode(view)
+        val mode = textModes[view] ?: fallbackTextModes[view] ?: fallbackFontMode(view).also {
+            fallbackTextModes[view] = it
+        }
         if (mode == 0) return argument
         val color = forcedTextColor(mode)
         return if (colorStateList) ColorStateList.valueOf(color) else color
@@ -614,6 +628,7 @@ object SettingsAppearanceApplier {
     private fun restoreTextColors(view: View?) {
         if (view is TextView) {
             textModes.remove(view)
+            fallbackTextModes.remove(view)
             originalTextColors.remove(view)?.let { color ->
                 internalTextColor.set(true)
                 try { view.setTextColor(color) } finally { internalTextColor.remove() }
@@ -940,6 +955,9 @@ object SettingsAppearanceApplier {
     private class LayerSession(val parent: ViewGroup, val view: SettingsBackgroundView) {
         private val backgrounds = ArrayList<Pair<View, Drawable?>>()
         private var observer: ViewTreeObserver.OnGlobalLayoutListener? = null
+        private var lastWidth = -1
+        private var lastHeight = -1
+        private var lastChildCount = -1
         fun clear(target: View) {
             if (target === view || backgrounds.any { it.first === target }) return
             backgrounds += target to target.background
@@ -958,7 +976,12 @@ object SettingsAppearanceApplier {
 
         fun attach(activity: Activity) {
             refresh(activity)
-            val listener = ViewTreeObserver.OnGlobalLayoutListener { refresh(activity) }
+            val listener = ViewTreeObserver.OnGlobalLayoutListener {
+                val root = parent.getChildAt(0)
+                if (root == null || root.width != lastWidth || root.height != lastHeight || parent.childCount != lastChildCount) {
+                    refresh(activity)
+                }
+            }
             observer = listener
             runCatching { parent.viewTreeObserver.addOnGlobalLayoutListener(listener) }
         }
@@ -966,6 +989,9 @@ object SettingsAppearanceApplier {
         fun refresh(activity: Activity) {
             clearNamedSurfaces(activity, this)
             val root = parent.getChildAt(0) ?: return
+            lastWidth = root.width
+            lastHeight = root.height
+            lastChildCount = parent.childCount
             clearPageSurfaces(activity, root, root)
         }
 
@@ -1008,23 +1034,45 @@ object SettingsAppearanceApplier {
         private data class Entry(val view: View, val drawable: Drawable, val alpha: Int)
         private val entries = ArrayList<Entry>()
         private val root: View = activity.window?.decorView ?: returnRoot(activity)
-        private val listener = ViewTreeObserver.OnGlobalLayoutListener { refresh(currentOpacity) }
+        private val listener = ViewTreeObserver.OnGlobalLayoutListener {
+            if (root.width != lastWidth || root.height != lastHeight || childCount(root) != lastChildCount) {
+                refresh(currentOpacity)
+            }
+        }
         private var currentOpacity = 100
+        private var lastWidth = -1
+        private var lastHeight = -1
+        private var lastChildCount = -1
+        private var initialized = false
 
         init { runCatching { root.viewTreeObserver.addOnGlobalLayoutListener(listener) } }
 
         fun apply(opacity: Int) {
             currentOpacity = opacity
+            if (initialized && (!isLightMode() || opacity >= 100) && entries.isEmpty()) return
+            if (initialized && opacity == currentOpacity && isLightMode() && opacity < 100) return
             if (!isLightMode() || opacity >= 100) {
                 restore()
+                initialized = true
                 return
             }
             refresh(opacity)
+            initialized = true
         }
 
         private fun refresh(opacity: Int) {
             if (!isLightMode() || opacity >= 100) { restore(); return }
+            lastWidth = root.width
+            lastHeight = root.height
+            lastChildCount = childCount(root)
             visit(root, opacity)
+        }
+
+        private fun childCount(view: View): Int {
+            if (view !is ViewGroup) return 1
+            var count = 1
+            for (index in 0 until view.childCount) count += childCount(view.getChildAt(index))
+            return count
         }
 
         private fun visit(view: View, opacity: Int) {
@@ -1070,12 +1118,18 @@ object SettingsAppearanceApplier {
         view.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK != Configuration.UI_MODE_NIGHT_YES
 
     private fun isCardLike(view: View): Boolean {
+        val width = view.width
+        val height = view.height
+        if (width <= 0 || height <= 0) return false
+        if (cardLikeViews[view] == true) return true
         val name = runCatching {
             if (view.id == View.NO_ID || view.id == 0) "" else view.resources.getResourceEntryName(view.id).lowercase()
         }.getOrDefault("")
         val cls = view.javaClass.name.lowercase()
-        return (name.contains("card") || cls.contains("card")) &&
-            !name.contains("icon") && !name.contains("button") && view.width > 0 && view.height > 0
+        val result = (name.contains("card") || cls.contains("card")) &&
+            !name.contains("icon") && !name.contains("button")
+        if (result) cardLikeViews[view] = true
+        return result
     }
 
     private class DeviceLayerSession(

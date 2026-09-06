@@ -65,6 +65,7 @@ hyperos4-glass-blur-main/
 /HyperBackground/
 /HyperCeiler-main/
 /REAREye-dev/
+/lockscreen-weather-extracted/
 /XiaomiHelper-master/
 /PowerShell 7.6.4/
 /null/
@@ -76,4 +77,4 @@ hyperos4-glass-blur-main/
 /*.db
 /*.tmp
 /.codex-window.xml
-
+/.phone_2609012300.svg

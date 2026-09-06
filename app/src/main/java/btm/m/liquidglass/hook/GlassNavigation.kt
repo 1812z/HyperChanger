@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.liquidglass.hook
 
 import android.content.res.Configuration
@@ -102,7 +104,6 @@ import top.yukonga.miuix.kmp.basic.NavigationBarDisplayMode
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.blur.Backdrop as MiuixBackdrop
 import top.yukonga.miuix.kmp.blur.drawBackdrop as drawMiuixBackdrop
-import top.yukonga.miuix.kmp.blur.highlight.Highlight as MiuixHighlight
 import top.yukonga.miuix.kmp.blur.textureBlurEffect
 import top.yukonga.miuix.kmp.shader.isRuntimeShaderSupported
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
@@ -149,35 +150,6 @@ private class NativeViewMiuixBackdrop(
                 sourcePosition[1] - surfacePosition.y
             )
             sourceView.draw(canvas)
-        } finally {
-            canvas.restore()
-        }
-    }
-}
-
-/** Bridges the page-only Kyant backdrop into MIUIX Blur without redrawing the ComposeView. */
-private class KyantMiuixBackdrop(
-    private val delegate: Backdrop,
-) : MiuixBackdrop {
-    override val isCoordinatesDependent: Boolean = delegate.isCoordinatesDependent
-
-    override fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBackdrop(
-        density: androidx.compose.ui.unit.Density,
-        coordinates: LayoutCoordinates?,
-        layerBlock: (GraphicsLayerScope.() -> Unit)?,
-        downscaleFactor: Int,
-    ) {
-        val target = coordinates ?: return
-        // MIUIX records the backdrop at a downsampled level. Match that scale when
-        // drawing the page layer, otherwise the sampled content appears enlarged/offset.
-        val canvas = drawContext.canvas.nativeCanvas
-        val scale = 1f / downscaleFactor.coerceAtLeast(1)
-        canvas.save()
-        canvas.scale(scale, scale)
-        try {
-            with(delegate) {
-                this@drawBackdrop.drawBackdrop(density, target, layerBlock)
-            }
         } finally {
             canvas.restore()
         }
@@ -276,7 +248,7 @@ fun CustomNavigation(
                 accentColorOverride = accentColorOverride,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
+                    .fillMaxWidth(0.53f * 0.82f * 1.10f)
                     .height(64.dp)
             ) {
                 tabs.forEachIndexed { index, tab ->
@@ -940,13 +912,7 @@ private fun HyperFloatingNavigationBar(
     } else {
         Color(0xFFF5F5F5).copy(alpha = 0.82f)
     }
-    val miuixBackdrop = remember(backdrop) { KyantMiuixBackdrop(backdrop) }
     val capsule = Capsule()
-    val bloomStroke = if (isDarkTheme) {
-        MiuixHighlight.GlassStrokeSmallDark
-    } else {
-        MiuixHighlight.GlassStrokeSmallLight
-    }
     val shadowColor = Color.Black.copy(alpha = 0.35f)
 
     BoxWithConstraints(
@@ -974,15 +940,23 @@ private fun HyperFloatingNavigationBar(
                 )
                 .then(
                     if (advancedMaterial) {
-                        Modifier.drawMiuixBackdrop(
-                            backdrop = miuixBackdrop,
+                        Modifier.drawBackdrop(
+                            backdrop = backdrop,
                             shape = { capsule },
                             effects = {
-                                // MIUIX blur is intentionally reduced by 40% for the OS4 bar.
-                                val reducedBlur = blurRadius * 0.48f
-                                textureBlurEffect(blurRadiusX = reducedBlur, blurRadiusY = reducedBlur)
+                                vibrancy()
+                                blur(with(density) { (blurRadius * 0.24f).dp.toPx() })
+                                // Keep the lens pronounced while avoiding an overly strong refraction.
+                                lens(
+                                    refractionHeight = 16.dp.toPx(),
+                                    refractionAmount = 32.dp.toPx(),
+                                    depthEffect = true,
+                                    chromaticAberration = false,
+                                )
                             },
-                            highlight = { bloomStroke },
+                            highlight = {
+                                Highlight.Default.copy(alpha = if (isDarkTheme) 0.78f else 0.96f)
+                            },
                             onDrawSurface = {
                                 drawRect(containerSurface)
                             },

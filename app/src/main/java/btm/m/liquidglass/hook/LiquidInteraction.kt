@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
 package btm.m.liquidglass.hook
 
 import android.os.SystemClock
@@ -139,7 +141,10 @@ internal class DampedDragAnimation(
 
 internal class InteractiveHighlight(
     private val animationScope: CoroutineScope,
-    private val position: (size: Size, offset: Offset) -> Offset
+    private val radiusMultiplier: Float = 1.5f,
+    private val surfaceAlpha: Float = 0.08f,
+    private val falloffMultiplier: Float = 0.5f,
+    private val position: (size: Size, offset: Offset) -> Offset,
 ) {
     private val pressSpec = spring(0.5f, 300f, 0.001f)
     private val positionSpec = spring(0.5f, 300f, Offset.VisibilityThreshold)
@@ -151,10 +156,11 @@ internal class InteractiveHighlight(
         uniform float2 size;
         layout(color) uniform half4 color;
         uniform float radius;
+        uniform float falloffMultiplier;
         uniform float2 position;
         half4 main(float2 coord) {
             float dist = distance(coord, position);
-            float intensity = smoothstep(radius, radius * 0.5, dist);
+            float intensity = smoothstep(radius, radius * falloffMultiplier, dist);
             return color * intensity;
         }
         """.trimIndent()
@@ -164,11 +170,12 @@ internal class InteractiveHighlight(
         val progress = pressAnimation.value
         if (progress > 0f) {
             if (shader != null) {
-                drawRect(Color.White.copy(alpha = 0.08f * progress), blendMode = BlendMode.Plus)
+                drawRect(Color.White.copy(alpha = surfaceAlpha * progress), blendMode = BlendMode.Plus)
                 val highlightPosition = position(size, positionAnimation.value)
                 shader.setFloatUniform("size", size.width, size.height)
                 shader.setColorUniform("color", Color.White.copy(alpha = 0.15f * progress))
-                shader.setFloatUniform("radius", size.minDimension * 1.5f)
+                shader.setFloatUniform("radius", size.minDimension * radiusMultiplier)
+                shader.setFloatUniform("falloffMultiplier", falloffMultiplier)
                 shader.setFloatUniform(
                     "position",
                     highlightPosition.x.fastCoerceIn(0f, size.width),
@@ -176,7 +183,12 @@ internal class InteractiveHighlight(
                 )
                 drawRect(ShaderBrush(shader.asComposeShader()), blendMode = BlendMode.Plus)
             } else {
-                drawRect(Color.White.copy(alpha = 0.25f * progress), blendMode = BlendMode.Plus)
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.15f * progress),
+                    radius = size.minDimension * radiusMultiplier,
+                    center = position(size, positionAnimation.value),
+                    blendMode = BlendMode.Plus,
+                )
             }
         }
         drawContent()
